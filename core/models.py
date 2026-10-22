@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 DocKind = Literal["예산신청서", "집행보고서"]
 EventType = Literal["행사·교육·피정", "성지순례·친교·기타"]
 IssueType = Literal["계산 불일치", "누계 누락", "기재 오류", "문서 누락", "번호 중복", "미확인", "예산 경고"]
+MAX_LINE_ITEMS = 7  # 양식 세부내역 칸 수(신청서·보고서 공통)
 FormKind = Literal["구", "신"]  # 구: 1~4월 초 양식(보고서 '반납금액' 칸, 신청서 보좌신부 결재란)
 IssueState = Literal["미해결", "확인중", "해결-정정", "해결-설명됨"]
 

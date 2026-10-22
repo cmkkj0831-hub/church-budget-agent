@@ -1,4 +1,5 @@
 """hwp(OLE)·hwpx(zip) 문서에서 문단 텍스트를 뽑는다."""
+import html
 import re
 import struct
 import zipfile
@@ -52,17 +53,35 @@ def _hwp_lines(path) -> list[str]:
     return lines
 
 
-def _hwpx_lines(path) -> list[str]:
-    lines = []
+def _para_text(p: str) -> str:
+    texts = re.findall(r"<hp:t>(.*?)</hp:t>", p, re.S)
+    joined = "".join(re.sub(r"<[^>]+>", " ", re.sub(r"<hp:lineBreak/>", " ", t)) for t in texts)
+    return html.unescape(joined)
+
+
+def _sections(path) -> list[str]:
     with zipfile.ZipFile(path) as z:
-        for name in sorted(n for n in z.namelist() if re.match(r"Contents/section\d+\.xml$", n)):
-            xml = z.read(name).decode("utf-8")
-            for p in re.findall(r"<hp:p\b.*?</hp:p>", xml, re.S):
-                lines.append("".join(re.findall(r"<hp:t>([^<]*)</hp:t>", p)))
-    return lines
+        names = sorted(n for n in z.namelist() if re.match(r"Contents/section\d+\.xml$", n))
+        return [z.read(n).decode("utf-8") for n in names]
+
+
+def _hwpx_lines(path) -> list[str]:
+    return [_para_text(p) for xml in _sections(path)
+            for p in re.findall(r"<hp:p\b.*?</hp:p>", xml, re.S)]
+
+
+def read_cells(path) -> dict[tuple[int, int], list[str]]:
+    """hwpx 표 칸 → 문단 텍스트 목록. 키는 (행, 열)."""
+    cells = {}
+    for xml in _sections(path):
+        for tc in re.findall(r"<hp:tc\b.*?</hp:tc>", xml, re.S):
+            a = re.search(r'colAddr="(\d+)" rowAddr="(\d+)"', tc)
+            cells[(int(a.group(2)), int(a.group(1)))] = [
+                _para_text(p) for p in re.findall(r"<hp:p\b.*?</hp:p>", tc, re.S)]
+    return cells
 
 
 def extract_text(path) -> str:
     path = Path(path)
-    lines = _hwpx_lines(path) if path.suffix.lower() == ".hwpx" else _hwp_lines(path)
+    lines = _hwpx_lines(path) if zipfile.is_zipfile(path) else _hwp_lines(path)  # 확장자 대신 내용으로 판별
     return "\n".join(l.strip() for l in lines if l.strip())

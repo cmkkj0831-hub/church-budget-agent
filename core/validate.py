@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from core.ledger import doc_seq, months_in_name, parse_date, report_amounts
-from core.models import Issue, IssueType, LedgerRow, ReportDoc, RequestDoc
+from core.models import MAX_LINE_ITEMS, Issue, IssueType, LedgerRow, ReportDoc, RequestDoc
 
 
 class Finding(BaseModel):
@@ -33,6 +33,9 @@ def won(n) -> str:
 
 def check_line_items(doc) -> list[Finding]:
     out = []
+    if len(doc.세부내역) > MAX_LINE_ITEMS:
+        out.append(_err("too_many_items", "기재 오류",
+                        f"세부내역 {len(doc.세부내역)}건 > 양식 칸 {MAX_LINE_ITEMS}건(항목을 묶어 주세요)"))
     for i in doc.세부내역:
         if i.금액 is not None and i.단가 * i.수량 != i.금액:
             out.append(_err("line_amount", "계산 불일치",
