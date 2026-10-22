@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from core.ledger import doc_seq, months_in_name, parse_date
+from core.ledger import doc_seq, months_in_name, parse_date, report_amounts
 from core.models import Issue, IssueType, LedgerRow, ReportDoc, RequestDoc
 
 
@@ -114,16 +114,23 @@ def validate_request(doc: RequestDoc, ledger, today: date | None = None) -> list
     out += check_doc_numbers([doc], ledger)
 
     if doc.사업ID in ledger.plan and doc.금번신청액:
+        plan = ledger.plan[doc.사업ID]
         limit = ledger.business_limit(doc.사업ID)
         if doc.금번신청액 > limit:
-            out.append(_warn("business_limit", "미확인",
-                             f"{doc.사업ID} {ledger.plan[doc.사업ID].사업명} 한도 초과: 신청 {won(doc.금번신청액)} > 남은 한도 {won(limit)}",
+            out.append(_warn("business_limit", "예산 경고",
+                             f"{doc.사업ID} {plan.사업명} 계획 초과: 신청 {won(doc.금번신청액)} > 남은 한도 {won(limit)}",
+                             문서번호=no))
+        projected = ledger.year_end_projection(doc.사업ID, today, doc.금번신청액, doc.월)
+        if projected > plan.본당예산:
+            out.append(_warn("year_end", "예산 경고",
+                             f"{doc.사업ID} {plan.사업명} 연말 예상 {won(projected)} > 계획 {won(plan.본당예산)}",
                              문서번호=no))
     if doc.금번신청액 and doc.금번신청액 > ledger.remaining():
         out.append(_err("annual_budget", "계산 불일치",
                         f"연간 예산 초과: 신청 {won(doc.금번신청액)} > 잔여 {won(ledger.remaining())}",
                         문서번호=no))
-    return out
+    budget = [f for f in out if f.유형 == "예산 경고"]
+    return [f for f in out if f.유형 != "예산 경고"] + merge_findings(budget)
 
 
 def validate_report(doc: ReportDoc, ledger, request=None, today: date | None = None) -> list[Finding]:
@@ -137,30 +144,41 @@ def validate_report(doc: ReportDoc, ledger, request=None, today: date | None = N
                         f"세부내역 합 {won(detail)} ≠ 합계(B) {won(doc.합계B)}", 문서번호=no))
     if doc.잔액 is None:
         out.append(_err("missing_balance", "기재 오류", "잔액란 공란", 문서번호=no))
-    out += _report_amounts(doc.본당보조, doc.자체예산, doc.합계B, doc.잔액, doc.예산A, no)
-    if request is not None and request.금번신청액 != doc.본당보조:
-        out.append(_err("subsidy_vs_request", "계산 불일치",
-                        f"본당보조 {won(doc.본당보조)} ≠ 연결 신청액 {won(request.금번신청액)}", 문서번호=no))
+    applied = (request.금번신청액 or 0) if request is not None else (0 if not doc.본당보조 else None)
+    out += _report_amounts(doc.양식, applied, doc.본당보조, doc.자체예산, doc.합계B, doc.잔액, doc.예산A, no)
     out += check_doc_context(doc, ledger, today)
     out += check_doc_numbers([doc], ledger)
     return out
 
 
-def _report_amounts(subsidy, own, total, balance, budget_a, no, seq=()) -> list[Finding]:
-    """예산A = 본당 + 자체, 잔액 = A − 합계B. 반납이 있으면 자체는 0 (잔액 0이면 본당 + 자체 = 합계B)."""
+def _report_amounts(form, applied, subsidy, own, total, balance, budget_a, no, seq=()) -> list[Finding]:
+    """보고서 금액 규칙(신청액 = 연결 신청서 금번신청액, 모르면 None).
+    본당 = min(신청, 실사용), 자체 = max(0, 실사용 − 신청), 합계B = 본당 + 자체,
+    예산A = 신청 + 자체, 잔액 = A − B = 신청 − 본당.
+    구 양식은 '반납금액' 칸을 잔액으로 쓰고 예산란에 실사용액을 적었으므로 구조·A−B 검증을 하지 않는다."""
+    if form == "구":
+        return []
     out = []
     kw = {"문서번호": no, "순번": list(seq)}
-    a = (subsidy or 0) + (own or 0)
-    if budget_a is not None and budget_a != a:
+    subsidy, own = subsidy or 0, own or 0
+    if total is not None and subsidy + own != total:
+        out.append(_err("report_sum", "계산 불일치",
+                        f"본당 {won(subsidy)} + 자체 {won(own)} ≠ 합계(B) {won(total)}", **kw))
+    if balance and own:
+        out.append(_err("own_with_balance", "계산 불일치", "반납 잔액이 있는데 자체예산 사용", **kw))
+    if applied is None or total is None:
+        return out
+    exp_subsidy, exp_own, _, exp_a, exp_balance = report_amounts(applied, total)
+    if subsidy != exp_subsidy:
+        out.append(_err("subsidy_vs_request", "계산 불일치",
+                        f"본당보조 {won(subsidy)} ≠ min(신청 {won(applied)}, 실사용 {won(total)}) = {won(exp_subsidy)}",
+                        **kw))
+    if budget_a is not None and budget_a != applied + own:
         out.append(_err("budget_a", "계산 불일치",
-                        f"예산(A) {won(budget_a)} ≠ 본당 {won(subsidy)} + 자체 {won(own or 0)}", **kw))
-    if total is not None and balance is not None:
-        if a - total != balance:
-            out.append(_err("report_sum", "계산 불일치",
-                            f"본당 {won(subsidy)} + 자체 {won(own or 0)} − 합계(B) {won(total)} ≠ 잔액 {won(balance)}",
-                            **kw))
-        if balance > 0 and (own or 0) > 0:
-            out.append(_err("own_with_balance", "계산 불일치", "반납 잔액이 있는데 자체예산 사용", **kw))
+                        f"예산(A) {won(budget_a)} ≠ 신청 {won(applied)} + 자체 {won(own)}", **kw))
+    if balance is not None and balance != applied + own - total:
+        out.append(_err("balance", "계산 불일치",
+                        f"잔액 {won(balance)} ≠ A − B {won(applied + own - total)}", **kw))
     return out
 
 
@@ -200,11 +218,9 @@ def _row_findings(r: LedgerRow, ledger) -> list[Finding]:
     else:
         if r.본당보조 and r.잔액 is None:
             out.append(_err("missing_balance", "기재 오류", "잔액란 공란", 순번=seq, 문서번호=no))
-        out += _report_amounts(r.본당보조, r.자체예산, r.합계, r.잔액, None, no, seq)
         req = ledger.find_ref(r.연결문서번호)
-        if req is not None and req.금번신청액 != r.본당보조:
-            out.append(_err("subsidy_vs_request", "계산 불일치",
-                            f"본당보조 {won(r.본당보조)} ≠ 연결 신청액 {won(req.금번신청액)}", 순번=seq, 문서번호=no))
+        applied = (req.금번신청액 or 0) if req is not None else (0 if not r.본당보조 else None)
+        out += _report_amounts(r.양식, applied, r.본당보조, r.자체예산, r.합계, r.잔액, None, no, seq)
     return out
 
 
@@ -220,16 +236,12 @@ def _duplicate_numbers(ledger) -> list[Finding]:
 
 def _cumulative_breaks(ledger) -> list[Finding]:
     """누계 연속성: 재계산 누계와의 차이가 직전 신청서와 달라지는 곳(오류가 처음 생긴 문서)."""
-    out, prev = [], 0
-    for step in ledger.cumulative_trace():
-        delta = step.차이 - prev
-        if delta:
-            r = ledger.row(step.순번)
-            kind = "누계 누락" if delta < 0 else "계산 불일치"
-            out.append(_err("cumulative", kind,
-                            f"신청누계액 {won(step.기재)}, 재계산 {won(step.계산)} (이 문서에서 차이 {delta:+,}원)",
-                            순번=[r.순번], 문서번호=[r.문서번호]))
-        prev = step.차이
+    out = []
+    for seq, delta in ledger.cumulative_breaks().items():
+        r = ledger.row(seq)
+        out.append(_err("cumulative", "누계 누락" if delta < 0 else "계산 불일치",
+                        f"신청누계액 {won(r.신청누계액)}, 이 문서에서 재계산과 차이 {delta:+,}원",
+                        순번=[r.순번], 문서번호=[r.문서번호]))
     return out
 
 
@@ -240,20 +252,28 @@ def _unreported(ledger, today: date) -> list[Finding]:
             if not r.연결문서번호 and not r.취소 and r.월번호 < today.month]
 
 
-def _business_overruns(ledger) -> list[Finding]:
-    """사업별 실집행 누계가 계획 본당예산을 처음 넘은 신청서."""
+def _business_overruns(ledger, today: date) -> list[Finding]:
+    """사업별 계획 초과(실집행 누계가 계획 본당예산을 처음 넘은 신청서)와 연말 예상 초과(최근 신청서)."""
     out = []
     for pid, plan in ledger.plan.items():
         running = 0
+        reqs = []
         for r in ledger.rows:
             if r.사업ID != pid or r.취소:
                 continue
+            if r.신청서:
+                reqs.append(r)
             running += (r.금번신청액 or 0) if r.신청서 else -(r.잔액 or 0)
-            if running > plan.본당예산:
-                out.append(_warn("business_limit", "미확인",
+            if running > plan.본당예산 and not any(f.코드 == "business_limit" and f.설명.startswith(pid) for f in out):
+                out.append(_warn("business_limit", "예산 경고",
                                  f"{pid} {plan.사업명} 실집행 누계 {won(running)} > 계획 본당예산 {won(plan.본당예산)}",
                                  순번=[r.순번], 문서번호=[r.문서번호]))
-                break
+        projected = ledger.year_end_projection(pid, today)
+        if reqs and projected > plan.본당예산:
+            last = reqs[-1]
+            out.append(_warn("year_end", "예산 경고",
+                             f"{pid} {plan.사업명} 연말 예상 {won(projected)} > 계획 {won(plan.본당예산)}",
+                             순번=[last.순번], 문서번호=[last.문서번호]))
     total = ledger.cumulative_requested()
     if total > ledger.settings.금액문서기준.예산배정액:
         out.append(_err("annual_budget", "계산 불일치",
@@ -293,6 +313,6 @@ def scan_ledger(ledger, issues: list[Issue], today: date | None = None,
     found += _duplicate_numbers(ledger)
     found += _cumulative_breaks(ledger)
     found += _unreported(ledger, today)
-    found += _business_overruns(ledger)
+    found += _business_overruns(ledger, today)
     found = merge_findings(found)
     return found if include_registered else [f for f in found if not is_covered(f, issues)]

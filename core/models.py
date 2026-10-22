@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field
 
 DocKind = Literal["예산신청서", "집행보고서"]
 EventType = Literal["행사·교육·피정", "성지순례·친교·기타"]
-IssueType = Literal["계산 불일치", "누계 누락", "기재 오류", "문서 누락", "번호 중복", "미확인"]
+IssueType = Literal["계산 불일치", "누계 누락", "기재 오류", "문서 누락", "번호 중복", "미확인", "예산 경고"]
+FormKind = Literal["구", "신"]  # 구: 1~4월 초 양식(보고서 '반납금액' 칸, 신청서 보좌신부 결재란)
 IssueState = Literal["미해결", "확인중", "해결-정정", "해결-설명됨"]
 
 
@@ -22,6 +23,7 @@ class LineItem(BaseModel):
 
 class DocBase(BaseModel):
     """신청서·보고서 공통 칸. 계산 칸은 build_*가 채운다(None = 미계산)."""
+    양식: FormKind = "신"
     월: int                      # 사업이 속한 월(폴더 기준)
     사업ID: str
     작성일: date | None = None
@@ -69,7 +71,8 @@ class RequestDoc(DocBase):
 
 
 class ReportDoc(DocBase):
-    """서식2 집행보고서. 예산A = 본당보조 + 자체예산, 잔액 = A − 합계B."""
+    """서식2 집행보고서. 본당 = min(신청, 실사용), 자체 = max(0, 실사용 − 신청),
+    합계B = 실사용 = 본당 + 자체, 예산A = 신청 + 자체, 잔액 = A − B = 신청 − 본당(반납)."""
     경과보고: str = ""
     예산A: int | None = None
     합계B: int | None = None      # = 세부내역 합(실사용액)
@@ -95,6 +98,7 @@ class LedgerRow(BaseModel):
     사업ID: str = ""
     연결문서번호: str = ""
     상태: str = ""
+    양식: FormKind = "신"
 
     @property
     def 월번호(self) -> int:

@@ -45,7 +45,9 @@ def test_childrens_day_detail_sums(ledger, book):
                              LineItem(내용="행사 회의 비용", 단가=32_000, 금액=32_000)],
                     예산A=490_060, 자체예산=60, 본당보조=490_060, 합계B=490_060, 잔액=0)
     found = validate_report(rep, ledger, request=ledger.row(24), today=TODAY)
-    assert {"detail_sum", "budget_a", "report_sum", "subsidy_vs_request"} <= codes(found)
+    # 세부합 490,070 ≠ B 490,060, 본당 490,060 + 자체 60 ≠ B, 본당 ≠ min(신청 490,000, 실사용)
+    assert {"detail_sum", "report_sum", "subsidy_vs_request"} <= codes(found)
+    assert "budget_a" not in codes(found)  # A 490,060 = 신청 490,000 + 자체 60
     assert any(f.순번 == [25] and f.유형 == "계산 불일치" for f in scan_all(ledger, book))
 
 
@@ -83,3 +85,31 @@ def test_unreported_requests(ledger, book):
 def test_scan_dedupes_registered(ledger, book):
     new = scan_ledger(ledger, book.issues, today=TODAY)
     assert not any(f.순번 in ([14], [25], [38], [4, 5]) for f in new)
+
+
+def test_budget_warnings_p11(ledger, book):
+    p11 = [f for f in scan_all(ledger, book) if f.유형 == "예산 경고"]
+    assert len(p11) == 1 and p11[0].순번 == [53] and p11[0].수준 == "경고"
+    assert "4,598,000원" in p11[0].설명 and "연말 예상 5,678,000원" in p11[0].설명
+    assert ledger.year_end_projection("P11", TODAY) == 5_678_000
+    new = scan_ledger(ledger, book.issues, today=TODAY)
+    assert not any(f.유형 == "예산 경고" for f in new)  # I-023으로 등록됨
+
+
+def test_year_end_projection_uses_plan_for_irregular(ledger):
+    # P12 교리 준비비: 9·10월 연속 신청이어도 매달 배분 사업이 아니므로 계획(11·12월 0원) 기준
+    assert ledger.year_end_projection("P12", TODAY, 100_000, 10) == 1_370_145 + 100_000
+    # P13 부서 운영비: 7월 일괄 1건뿐 → 남은 10~12월은 계획 월 60,000원
+    assert ledger.year_end_projection("P13", TODAY) == 480_000 + 3 * 60_000
+    # P09 부서 소풍: 신청 없음 → 10월 계획 900,000원
+    assert ledger.year_end_projection("P09", TODAY) == 900_000
+
+
+def test_old_form_reports_skip_structure_check(ledger, book):
+    found = scan_all(ledger, book)
+    # 구 양식: 순번 3(예산란 실사용, 반납금액 30,500), 10(본당 = 신청액, 반납 15,850)
+    assert ledger.row(3).양식 == ledger.row(10).양식 == "구"
+    assert not any(f.순번 in ([3], [10]) and f.유형 == "계산 불일치" for f in found)
+    # 같은 모양이라도 신 양식이면 잡는다
+    ledger.row(10).양식 = "신"
+    assert any(f.순번 == [10] and f.코드 == "report_sum" for f in scan_all(ledger, book))

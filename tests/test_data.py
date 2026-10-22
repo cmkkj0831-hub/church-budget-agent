@@ -80,3 +80,11 @@ def test_issues_valid(real):
         assert set(i.관련이슈) <= set(ids)
         if i.상태 == "해결-정정":
             assert any(h.이슈ID == i.이슈ID for h in book.history)
+
+
+def test_form_column(real):
+    """구 양식: 보고서 '반납금액' 칸, 신청서 보좌신부 결재란(원본 문서에서 판별)."""
+    ledger, _ = real
+    old = [r.순번 for r in ledger.rows if r.양식 == "구"]
+    assert old == list(range(1, 19)) + [20]
+    assert all(r.양식 in ("구", "신") for r in ledger.rows)

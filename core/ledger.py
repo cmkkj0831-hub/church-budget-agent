@@ -55,6 +55,13 @@ def months_in_name(name: str) -> set[int]:
     return {int(m) for m in re.findall(r"(?<!\d)(\d{1,2})\s*월", name or "") if 1 <= int(m) <= 12}
 
 
+def report_amounts(applied: int, used: int) -> tuple[int, int, int, int, int]:
+    """보고서 금액 규칙 → (본당보조, 자체예산, 합계B, 예산A, 잔액)."""
+    subsidy = min(applied, used)
+    own = max(0, used - applied)
+    return subsidy, own, used, applied + own, applied - subsidy
+
+
 # ---------------------------------------------------------------- 결과 타입
 
 class BlockedError(Exception):
@@ -77,6 +84,28 @@ class BuildResult:
     @property
     def warnings(self):
         return [f for f in self.findings if f.수준 == "경고"]
+
+
+@dataclass
+class CumulativeSummary:
+    """누계 두 기준. 문서 기준 = 마지막 신청서에 적힌 누계, 재계산 = 장부 전체 재계산."""
+    문서기준_순번: int
+    문서기준: int
+    재계산: int
+    예산배정액: int
+    단절: dict[int, int]  # 순번 → 그 문서에서 새로 생긴 차이
+
+    @property
+    def 차이(self) -> int:
+        return self.문서기준 - self.재계산
+
+    @property
+    def 문서기준_잔여(self) -> int:
+        return self.예산배정액 - self.문서기준
+
+    @property
+    def 재계산_잔여(self) -> int:
+        return self.예산배정액 - self.재계산
 
 
 @dataclass
@@ -174,6 +203,34 @@ class Ledger:
         return [CumulativeStep(r.순번, r.신청누계액, self.cumulative_requested(r.순번 + 1))
                 for r in self.rows if r.신청서 and not r.취소]
 
+    def cumulative_breaks(self) -> dict[int, int]:
+        """재계산 누계와의 차이가 직전 신청서와 달라지는 문서(오류가 처음 생긴 곳)와 변화량."""
+        out, prev = {}, 0
+        for step in self.cumulative_trace():
+            if step.차이 != prev:
+                out[step.순번] = step.차이 - prev
+            prev = step.차이
+        return out
+
+    def cumulative_summary(self) -> CumulativeSummary:
+        last = [r for r in self.requests() if not r.취소 and r.신청누계액 is not None][-1]
+        return CumulativeSummary(last.순번, last.신청누계액, self.cumulative_requested(),
+                                 self.settings.금액문서기준.예산배정액, self.cumulative_breaks())
+
+    def year_end_projection(self, pid: str, today: date | None = None,
+                            extra_request: int = 0, extra_month: int | None = None) -> int:
+        """사업 연말 예상 실집행. 이미 지난 달은 더하지 않는다. 남은 달은 매달 배분된 사업이
+        최근 두 달 연속 신청 중이면 최근 신청액으로, 아니면 계획 월 배분으로 채운다."""
+        today = today or date.today()
+        plan = self.plan[pid]
+        reqs = [r for r in self.requests() if r.사업ID == pid and not r.취소]
+        months = {r.월번호 for r in reqs} | ({extra_month} if extra_month else set())
+        base = max([today.month - 1, *months])
+        monthly = all(plan.월별) and base in months and base - 1 in months
+        rate = extra_request if extra_request and extra_month == base else (reqs[-1].금번신청액 if reqs else 0)
+        future = sum(rate if monthly else plan.월별[m - 1] for m in range(base + 1, 13))
+        return self.business_spent(pid) + extra_request + future
+
     # ---- 생성
     def _fill_common(self, doc, kind: str, number: int | None = None):
         s = self.settings
@@ -213,15 +270,7 @@ class Ledger:
         self._fill_common(doc, "집행보고서", number)
         used = doc.세부합()
         applied = (request.금번신청액 or 0) if request is not None else 0
-        doc.합계B = used
-        doc.본당보조 = applied
-        if used >= applied:          # 초과분은 자체예산
-            doc.자체예산 = used - applied
-            doc.잔액 = 0
-        else:                         # 미사용분은 반납
-            doc.자체예산 = 0
-            doc.잔액 = applied - used
-        doc.예산A = doc.본당보조 + doc.자체예산
+        doc.본당보조, doc.자체예산, doc.합계B, doc.예산A, doc.잔액 = report_amounts(applied, used)
         if request is not None:
             doc.연결문서번호 = request.참조 if isinstance(request, LedgerRow) else request.문서번호
         return BuildResult([doc], validate.validate_report(doc, self, request, today=today))
@@ -261,7 +310,7 @@ class Ledger:
     def to_row(self, doc) -> LedgerRow:
         kind = "예산신청서" if isinstance(doc, RequestDoc) else "집행보고서"
         row = LedgerRow(
-            월=f"{doc.월}월", 구분=kind, 작성일=format_date(doc.작성일),
+            양식=doc.양식, 월=f"{doc.월}월", 구분=kind, 작성일=format_date(doc.작성일),
             자체예산=doc.자체예산, 본당보조=doc.본당보조, 문서번호=doc.문서번호,
             행사명=doc.행사명, 파일명=self.file_name(doc.월, doc.행사명, kind),
             사업ID=doc.사업ID, 연결문서번호=doc.연결문서번호,

@@ -2,6 +2,7 @@
 
     python -m core.migrate          # data/ 파일이 이미 있으면 중단
     python -m core.migrate --force  # 덮어쓰기(이슈 처리 이력이 사라지므로 주의)
+    python -m core.migrate --fill-form  # 기존 장부의 '양식' 열만 원본 문서로 채움
 
 장부 값은 엑셀에 적힌 그대로 옮긴다. 비고 열은 옮기지 않고 이슈로 등록한다.
 """
@@ -14,6 +15,7 @@ import openpyxl
 
 from core.issues import HISTORY_COLUMNS, ISSUE_COLUMNS
 from core.ledger import LEDGER_COLUMNS, MULTI_SEP, parse_date, write_csv
+from hwpx.text import extract_text
 from core.paths import (
     DATA_DIR, HISTORY_CSV, ISSUES_CSV, LEDGER_CSV, PLAN_CSV, PLAN_INFO_CSV,
     SETTINGS_JSON, find_child, nfc, source_dir,
@@ -105,6 +107,45 @@ INITIAL_ISSUES = [
 ]
 
 
+def detect_form(text: str, kind: str) -> str:
+    """구 양식: 보고서는 '반납 금액' 칸, 신청서는 보좌신부·부주임신부·주임신부 결재란."""
+    if kind == "집행보고서":
+        return "구" if re.search(r"반\s*납\s*금\s*액", text) else "신"
+    return "구" if "보좌신부" in text else "신"
+
+
+def source_file(src, month: str, file_name: str):
+    try:
+        return find_child(find_child(src, month), file_name)
+    except FileNotFoundError:
+        return None
+
+
+def form_of(src, month: str, file_name: str, kind: str) -> str | None:
+    path = source_file(src, month, file_name)
+    return detect_form(extract_text(path), kind) if path else None
+
+
+def fill_form() -> int:
+    """기존 data/ledger.csv의 '양식' 열만 원본 문서 기준으로 채운다(다른 값은 그대로)."""
+    from core.ledger import Ledger
+    ledger = Ledger.load()
+    src = source_dir(2026)
+    missing = []
+    for r in ledger.rows:
+        form = form_of(src, r.월, r.파일명, r.구분)
+        if form is None:
+            missing.append(r.순번)
+        else:
+            r.양식 = form
+    ledger.save()
+    old = [r.순번 for r in ledger.rows if r.양식 == "구"]
+    print(f"구 양식 {len(old)}건: 순번 {old}")
+    if missing:
+        print(f"원본 없음(신 유지): 순번 {missing}")
+    return 0
+
+
 def map_project(name: str):
     for pattern, pid, confident in PROJECT_RULES:
         if re.search(pattern, name):
@@ -164,6 +205,7 @@ def build_ledger(src) -> tuple[list[dict], list[dict]]:
         row["사업ID"], confident = map_project(nfc(r["행사명"]))
         row["연결문서번호"] = ""
         row["상태"] = ""
+        row["양식"] = form_of(src, r["월"], r["파일명"], r["구분"]) or "신"
         row["_confident"] = confident
         ledger.append(row)
         if r.get("비고"):
@@ -254,7 +296,10 @@ def build_settings() -> dict:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--fill-form", action="store_true")
     args = ap.parse_args(argv)
+    if args.fill_form:
+        return fill_form()
 
     targets = [LEDGER_CSV, PLAN_CSV, PLAN_INFO_CSV, ISSUES_CSV, HISTORY_CSV, SETTINGS_JSON]
     existing = [p.name for p in targets if p.exists()]

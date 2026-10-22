@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core.ledger import (
-    MULTI_SEP, BlockedError, BuildResult, Ledger, read_csv, write_csv,
+    MULTI_SEP, BlockedError, BuildResult, CumulativeSummary, Ledger, read_csv, write_csv,
 )
 from core.models import HistoryEntry, Issue, LedgerRow, Resolution
 from core.paths import DATA_DIR
@@ -13,6 +13,14 @@ ISSUE_COLUMNS = list(Issue.model_fields)
 HISTORY_COLUMNS = list(HistoryEntry.model_fields)
 LIST_FIELDS = ("대상순번", "대상문서번호", "관련이슈")
 RESOLVED_STATE = {"정정": "해결-정정", "설명": "해결-설명됨"}
+# 화면·엑셀 표시 색: 문서 오류는 빨강, 예산 경고는 주황(문서 자체의 오류가 아님)
+DOC_ERROR_COLOR = "C00000"
+ISSUE_TYPE_COLORS = {"예산 경고": "C65911"}
+CUMULATIVE_TYPES = ("누계 누락", "계산 불일치")
+
+
+def issue_color(issue_type: str) -> str:
+    return ISSUE_TYPE_COLORS.get(issue_type, DOC_ERROR_COLOR)
 
 
 def _split(v: str) -> list[str]:
@@ -61,13 +69,17 @@ class IssueBook:
     def open_issues(self, seq: int | None = None) -> list[Issue]:
         return [i for i in self.issues if i.열림 and (seq is None or seq in i.대상순번)]
 
-    def ledger_remarks(self) -> dict[int, str]:
-        """비고 = 문서별 열린 이슈 설명. 해결되면 사라진다."""
-        out: dict[int, list[str]] = {}
+    def ledger_remarks_detail(self) -> dict[int, list[tuple[str, str]]]:
+        """문서별 열린 이슈 (유형, 설명) 목록. 유형별 색 표시용."""
+        out: dict[int, list[tuple[str, str]]] = {}
         for i in self.open_issues():
             for seq in i.대상순번:
-                out.setdefault(seq, []).append(i.설명)
-        return {k: " / ".join(v) for k, v in out.items()}
+                out.setdefault(seq, []).append((i.유형, i.설명))
+        return out
+
+    def ledger_remarks(self) -> dict[int, str]:
+        """비고 = 문서별 열린 이슈 설명. 해결되면 사라진다."""
+        return {k: " / ".join(d for _, d in v) for k, v in self.ledger_remarks_detail().items()}
 
     def next_id(self) -> str:
         n = max((int(i.이슈ID.split("-")[1]) for i in self.issues), default=0)
@@ -101,6 +113,29 @@ def commit_with_issues(ledger: Ledger, book: IssueBook, build: BuildResult,
         targets = [by_no[n] for n in f.문서번호 if n in by_no] or rows
         created.append(create_issue(book, f.model_copy(update={"순번": [], "문서번호": []}), targets))
     return rows, created
+
+
+@dataclass
+class CumulativeReconciliation:
+    """문서 기준 누계와 재계산 누계의 차이를 열린 이슈로 설명한다."""
+    summary: CumulativeSummary
+    항목: list[dict] = field(default_factory=list)  # {순번, 문서번호, 차이, 이슈}
+    미설명: list[int] = field(default_factory=list)
+
+    @property
+    def 설명됨(self) -> bool:
+        return not self.미설명
+
+
+def cumulative_reconciliation(ledger: Ledger, book: IssueBook) -> CumulativeReconciliation:
+    summary = ledger.cumulative_summary()
+    rec = CumulativeReconciliation(summary)
+    for seq, delta in summary.단절.items():
+        ids = [i.이슈ID for i in book.open_issues(seq) if i.유형 in CUMULATIVE_TYPES]
+        rec.항목.append({"순번": seq, "문서번호": ledger.row(seq).문서번호, "차이": delta, "이슈": ids})
+        if not ids:
+            rec.미설명.append(seq)
+    return rec
 
 
 @dataclass

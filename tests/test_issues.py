@@ -3,7 +3,7 @@ from datetime import date
 
 import pytest
 
-from core.issues import IssueBook, apply_resolution
+from core.issues import IssueBook, apply_resolution, cumulative_reconciliation
 from core.ledger import BlockedError, Ledger
 from core.models import LedgerChange, LedgerRow, Resolution
 from core.validate import scan_ledger
@@ -22,6 +22,8 @@ def test_initial_remarks(book):
     for iid in ("I-017", "I-018", "I-019", "I-020"):
         assert book.get(iid).설명 in r38
     assert 19 not in book.ledger_remarks()  # I-009 해결됨
+    kinds = dict(book.ledger_remarks_detail()[53])  # 유형 → 설명
+    assert set(kinds) == {"기재 오류", "예산 경고"}
 
 
 def test_resolution_a_withdrawn(ledger, book, data_dir):
@@ -43,6 +45,9 @@ def test_resolution_a_withdrawn(ledger, book, data_dir):
 
     all_found = scan_ledger(ledger, book.issues, today=TODAY, include_registered=True)
     assert not any(38 in f.순번 and f.유형 in ("누계 누락", "문서 누락") for f in all_found)
+    rec = cumulative_reconciliation(ledger, book)  # 38 단절이 사라지고 남은 차이 2,850은 I-016
+    assert (rec.summary.문서기준, rec.summary.재계산, rec.summary.차이) == (23_216_860, CUM - 480_000, 2_850)
+    assert [i["순번"] for i in rec.항목] == [32, 37] and rec.설명됨
     assert book.history[-1].변경전 == "보고서없음" and book.history[-1].변경후 == "취소"
 
     ledger.save(); book.save()
@@ -110,4 +115,5 @@ def test_correction_of_value(ledger, book):
         변경=[LedgerChange(순번=53, 열="행사명", 값="10월 교사회 운영비")]))
     assert res.diff[0]["변경전"] == "9월 교사회 운영비"
     assert ledger.row(53).행사명 == "10월 교사회 운영비"
-    assert 53 not in book.ledger_remarks()
+    assert book.get("I-022").설명 not in book.ledger_remarks()[53]
+    assert book.ledger_remarks()[53] == book.get("I-023").설명  # 예산 경고만 남음

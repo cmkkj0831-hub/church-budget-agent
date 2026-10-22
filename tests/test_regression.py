@@ -1,5 +1,10 @@
 """회귀: 올해 장부를 처음부터 재계산해 문서에 적힌 누계와 비교한다.
 차이가 생기는 곳은 모두 등록된 이슈와 대응해야 한다."""
+from datetime import date
+
+from core.issues import cumulative_reconciliation
+from core.ledger import report_amounts
+from core.models import LineItem, ReportDoc
 from core.validate import scan_ledger
 from tests.conftest import TODAY
 
@@ -7,13 +12,7 @@ CUMULATIVE_TYPES = {"누계 누락", "계산 불일치"}
 
 
 def _breaks(ledger):
-    """재계산 누계와의 차이가 바뀌는 신청서(오류가 처음 생긴 문서)와 그 변화량."""
-    out, prev = {}, 0
-    for step in ledger.cumulative_trace():
-        if step.차이 != prev:
-            out[step.순번] = step.차이 - prev
-        prev = step.차이
-    return out
+    return ledger.cumulative_breaks()
 
 
 def test_every_cumulative_difference_has_issue(ledger, book):
@@ -47,9 +46,57 @@ def test_current_totals(ledger):
 def test_scan_finds_only_known_new_candidates(ledger, book):
     """등록 이슈로 설명되지 않는 이상은 아래 후보뿐이어야 한다(사용자 판단 대기)."""
     known = {
-        ("계산 불일치", (3,)),    # 1월 운영비 보고서: 본당=실사용, 반납 30,500 (예산A − 합계B ≠ 반납)
-        ("계산 불일치", (34,)),   # 6월 교리 보고서: 예산(A) 420,000이나 본당 390,295
-        ("미확인", (53,)),        # P11 운영비 실집행 4,598,000 > 계획 4,320,000
+        ("계산 불일치", (21,)),   # 4월 운영비 보고서: 본당 420,000(신청액) 기재, 규칙상 실사용 368,500
+        ("계산 불일치", (22,)),   # 4월 성소주일 보고서: 본당 600,000(신청액) 기재, 규칙상 실사용 269,360
     }
     found = {(f.유형, tuple(f.순번)) for f in scan_ledger(ledger, book.issues, today=TODAY)}
     assert found <= known
+
+
+# ---------------------------------------------------------------- 보고서 금액 규칙
+
+def test_report_rule_refund_case(ledger):
+    """반납: 순번 34 6월 교리준비비 보고서(신청 420,000, 실사용 390,295)."""
+    draft = ReportDoc(월=6, 사업ID="P12", 행사명="6월 교리준비비", 작성일=date(2026, 6, 28),
+                      세부내역=[LineItem(내용="6월 3학년 교리준비비", 단가=180_695),
+                               LineItem(내용="6월 14일 6학년 특별 교리비", 단가=209_600)])
+    rep = ledger.build_report(draft, ledger.row(30), today=TODAY).docs[0]
+    assert (rep.본당보조, rep.자체예산, rep.합계B, rep.예산A, rep.잔액) == (390_295, 0, 390_295, 420_000, 29_705)
+    row = ledger.row(34)
+    assert (row.본당보조, row.자체예산, row.합계, row.잔액) == (rep.본당보조, rep.자체예산, rep.합계B, rep.잔액)
+
+
+def test_report_rule_overspend_case(ledger):
+    """초과: 순번 15 3월 운영비 보고서(신청 480,000, 실사용 518,000 → A 518,000 = 480,000 + 자체 38,000)."""
+    draft = ReportDoc(월=3, 사업ID="P11", 행사명="교사회 운영비", 작성일=date(2026, 4, 5),
+                      세부내역=[LineItem(내용="3월 7일 미사 후 식대", 단가=314_000),
+                               LineItem(내용="3월 14일 미사 전 영화 관람", 단가=70_000),
+                               LineItem(내용="3월 14일 미사 전 식사", 단가=88_000),
+                               LineItem(내용="3월 28일 미사 후 식대", 단가=46_000)])
+    rep = ledger.build_report(draft, ledger.row(13), today=TODAY).docs[0]
+    assert (rep.본당보조, rep.자체예산, rep.합계B, rep.예산A, rep.잔액) == (480_000, 38_000, 518_000, 518_000, 0)
+    row = ledger.row(15)
+    assert (row.본당보조, row.자체예산, row.합계, row.잔액) == (rep.본당보조, rep.자체예산, rep.합계B, rep.잔액)
+
+
+def test_report_rule_against_all_new_form_reports(ledger, book):
+    """신 양식 보고서 전부를 규칙으로 재계산. 다른 값은 등록 이슈 또는 알려진 후보(21, 22)여야 한다."""
+    pending = {21, 22}
+    for r in ledger.reports():
+        req = ledger.find_ref(r.연결문서번호)
+        if r.양식 != "신" or req is None:
+            continue
+        subsidy, own, total, _, balance = report_amounts(req.금번신청액, r.합계)
+        if (r.본당보조, r.자체예산, r.잔액) != (subsidy, own, balance):
+            assert r.순번 in pending or any(r.순번 in i.대상순번 for i in book.issues), r.순번
+
+
+# ---------------------------------------------------------------- 누계 두 기준
+
+def test_cumulative_two_bases(ledger, book):
+    rec = cumulative_reconciliation(ledger, book)
+    s = rec.summary
+    assert (s.문서기준, s.재계산, s.차이) == (23_216_860, 23_694_010, -477_150)
+    assert (s.문서기준_잔여, s.재계산_잔여) == (13_253_140, 12_775_990)
+    assert sum(item["차이"] for item in rec.항목) == s.차이
+    assert rec.설명됨 and all(item["이슈"] for item in rec.항목)

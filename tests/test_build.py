@@ -60,13 +60,14 @@ def test_build_request_operating_cost(ledger, book, data_dir):
     assert doc.신청누계액 == 23_694_010 + 540_000
     assert doc.잔여액 == 36_470_000 - doc.신청누계액
     assert res.errors == []
-    assert [w.코드 for w in res.warnings] == ["business_limit"]  # P11 계획 초과
+    assert [w.유형 for w in res.warnings] == ["예산 경고"]  # P11 계획 초과 + 연말 예상 초과(합쳐짐)
+    assert "연말 예상 5,678,000원" in res.warnings[0].설명  # 4,598,000 + 11월 540,000 + 12월 540,000
 
     with pytest.raises(BlockedError):
         ledger.commit(res)  # 경고 미확인
     rows, issues = commit_with_issues(ledger, book, res, accept_warnings=True)
     assert rows[0].상태 == "진행중" and rows[0].파일명 == "1_11월 교사회 운영비_신청서.hwpx"
-    assert issues[0].이슈ID == "I-023" and issues[0].대상순번 == [54] and issues[0].유형 == "미확인"
+    assert issues[0].이슈ID == "I-024" and issues[0].대상순번 == [54] and issues[0].유형 == "예산 경고"
     assert 54 in book.ledger_remarks()
 
     ledger.save(); book.save()
@@ -75,15 +76,19 @@ def test_build_request_operating_cost(ledger, book, data_dir):
     assert again.settings.금액문서기준.다음문서번호 == 54
 
 
-@pytest.mark.parametrize("used, own, balance", [(500_000, 0, 40_000), (600_000, 60_000, 0)])
-def test_build_report_from_request(ledger, used, own, balance):
+@pytest.mark.parametrize("used, subsidy, own, balance", [
+    (500_000, 500_000, 0, 40_000),   # 미사용: 본당 = 실사용, 반납 40,000
+    (600_000, 540_000, 60_000, 0),   # 초과: 본당 = 신청, 초과분 자체
+])
+def test_build_report_from_request(ledger, used, subsidy, own, balance):
     req = ledger.row(53)  # 10월 운영비 신청 540,000
     draft = ReportDoc(월=10, 사업ID="P11", 행사명="10월 교사회 운영비", 작성일=date(2026, 10, 31),
                       세부내역=[LineItem(내용="회합 후 식대", 단가=used)])
     res = ledger.build_report(draft, req, today=TODAY)
     rep = res.docs[0]
-    assert (rep.본당보조, rep.자체예산, rep.합계B, rep.잔액) == (540_000, own, used, balance)
-    assert rep.예산A == rep.본당보조 + rep.자체예산
+    assert (rep.본당보조, rep.자체예산, rep.합계B, rep.잔액) == (subsidy, own, used, balance)
+    assert rep.합계B == rep.본당보조 + rep.자체예산
+    assert rep.예산A == 540_000 + own and rep.예산A - rep.합계B == rep.잔액
     assert rep.연결문서번호 == "(예)2026-052"
     assert res.errors == []
     before = ledger.cumulative_requested()
