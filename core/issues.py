@@ -11,7 +11,7 @@ from core.paths import DATA_DIR
 
 ISSUE_COLUMNS = list(Issue.model_fields)
 HISTORY_COLUMNS = list(HistoryEntry.model_fields)
-LIST_FIELDS = ("대상순번", "대상문서번호", "관련이슈")
+LIST_FIELDS = ("대상순번", "대상문서번호", "관련이슈", "검증코드")
 RESOLVED_STATE = {"정정": "해결-정정", "설명": "해결-설명됨"}
 # 화면·엑셀 표시 색: 문서 오류는 빨강, 예산 경고는 주황(문서 자체의 오류가 아님)
 DOC_ERROR_COLOR = "C00000"

@@ -43,14 +43,19 @@ def test_current_totals(ledger):
     assert ledger.next_doc_number() == 53
 
 
-def test_scan_finds_only_known_new_candidates(ledger, book):
-    """등록 이슈로 설명되지 않는 이상은 아래 후보뿐이어야 한다(사용자 판단 대기)."""
-    known = {
-        ("계산 불일치", (21,)),   # 4월 운영비 보고서: 본당 420,000(신청액) 기재, 규칙상 실사용 368,500
-        ("계산 불일치", (22,)),   # 4월 성소주일 보고서: 본당 600,000(신청액) 기재, 규칙상 실사용 269,360
-    }
-    found = {(f.유형, tuple(f.순번)) for f in scan_ledger(ledger, book.issues, today=TODAY)}
-    assert found <= known
+def test_scan_finds_no_unregistered(ledger, book):
+    """올해 장부의 이상은 모두 이슈로 등록돼 있어야 한다."""
+    assert scan_ledger(ledger, book.issues, today=TODAY) == []
+
+
+def test_explained_issue_covers_only_its_codes(ledger, book):
+    """순번 21·22(I-024·025, 해결-설명됨)는 본당란 불일치만 덮는다. 다른 오류는 다시 잡힌다."""
+    assert {book.get(i).상태 for i in ("I-024", "I-025")} == {"해결-설명됨"}
+    assert 21 not in book.ledger_remarks() and 22 not in book.ledger_remarks()
+    ledger.row(21).잔액 = 0  # 반납액을 틀리게 바꾸면 balance 검사는 걸려야 한다
+    found = scan_ledger(ledger, book.issues, today=TODAY)
+    assert ([21], "balance") in [(f.순번, f.코드) for f in found]
+    assert not any(f.순번 == [21] and f.코드 in ("report_sum", "subsidy_vs_request") for f in found)
 
 
 # ---------------------------------------------------------------- 보고서 금액 규칙
@@ -80,15 +85,14 @@ def test_report_rule_overspend_case(ledger):
 
 
 def test_report_rule_against_all_new_form_reports(ledger, book):
-    """신 양식 보고서 전부를 규칙으로 재계산. 다른 값은 등록 이슈 또는 알려진 후보(21, 22)여야 한다."""
-    pending = {21, 22}
+    """신 양식 보고서 전부를 규칙으로 재계산. 다른 값은 등록 이슈로 설명돼야 한다."""
     for r in ledger.reports():
         req = ledger.find_ref(r.연결문서번호)
         if r.양식 != "신" or req is None:
             continue
         subsidy, own, total, _, balance = report_amounts(req.금번신청액, r.합계)
         if (r.본당보조, r.자체예산, r.잔액) != (subsidy, own, balance):
-            assert r.순번 in pending or any(r.순번 in i.대상순번 for i in book.issues), r.순번
+            assert any(r.순번 in i.대상순번 for i in book.issues), r.순번
 
 
 # ---------------------------------------------------------------- 누계 두 기준

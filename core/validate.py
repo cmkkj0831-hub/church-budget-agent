@@ -298,8 +298,10 @@ def merge_findings(findings: list[Finding]) -> list[Finding]:
 
 
 def is_covered(f: Finding, issues: list[Issue]) -> bool:
-    """같은 유형이고 대상 순번이 겹치는 이슈가 이미 있으면(상태 무관) 등록된 것으로 본다."""
-    return any(i.유형 == f.유형 and set(i.대상순번) & set(f.순번) for i in issues)
+    """대상 순번이 겹치는 이슈가 이미 있고(상태 무관), 유형이 같거나 그 이슈의 검증코드에
+    이 검사 코드가 있으면 등록된 것으로 본다(예: 금액 영향 없는 기재 방식 차이를 설명한 이슈)."""
+    return any(set(i.대상순번) & set(f.순번) and (i.유형 == f.유형 or f.코드 in i.검증코드)
+               for i in issues)
 
 
 def scan_ledger(ledger, issues: list[Issue], today: date | None = None,
@@ -314,5 +316,6 @@ def scan_ledger(ledger, issues: list[Issue], today: date | None = None,
     found += _cumulative_breaks(ledger)
     found += _unreported(ledger, today)
     found += _business_overruns(ledger, today)
-    found = merge_findings(found)
-    return found if include_registered else [f for f in found if not is_covered(f, issues)]
+    if not include_registered:
+        found = [f for f in found if not is_covered(f, issues)]
+    return merge_findings(found)

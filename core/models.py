@@ -173,6 +173,7 @@ class Issue(BaseModel):
     설명: str
     근거: str = ""
     관련이슈: list[str] = Field(default_factory=list)
+    검증코드: list[str] = Field(default_factory=list)  # 이 이슈가 설명하는 검증 코드(대상 순번 한정)
     상태: IssueState = "미해결"
     해결방식: str = ""
     해결내용: str = ""
