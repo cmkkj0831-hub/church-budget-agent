@@ -12,10 +12,8 @@ import sys
 
 import openpyxl
 
-from core.ledger import (
-    HISTORY_COLUMNS, ISSUE_COLUMNS, LEDGER_COLUMNS, MULTI_SEP,
-    parse_date, write_csv,
-)
+from core.issues import HISTORY_COLUMNS, ISSUE_COLUMNS
+from core.ledger import LEDGER_COLUMNS, MULTI_SEP, parse_date, write_csv
 from core.paths import (
     DATA_DIR, HISTORY_CSV, ISSUES_CSV, LEDGER_CSV, PLAN_CSV, PLAN_INFO_CSV,
     SETTINGS_JSON, find_child, nfc, source_dir,

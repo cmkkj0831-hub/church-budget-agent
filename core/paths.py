@@ -12,7 +12,7 @@ LEDGER_CSV = DATA_DIR / "ledger.csv"
 PLAN_CSV = DATA_DIR / "plan.csv"
 PLAN_INFO_CSV = DATA_DIR / "plan_info.csv"
 ISSUES_CSV = DATA_DIR / "issues.csv"
-HISTORY_CSV = DATA_DIR / "ledger_history.csv"
+HISTORY_CSV = DATA_DIR / "history.csv"
 SETTINGS_JSON = DATA_DIR / "settings.json"
 
 

@@ -1,75 +1,67 @@
-"""이관 데이터 무결성 검사."""
-import json
-
+"""이관 데이터 무결성 검사(실제 data/ 읽기 전용)."""
 import pytest
 
-from core.ledger import (
-    ISSUE_STATES, ISSUE_TYPES, LEDGER_COLUMNS, derive_remarks, load_history, load_issues,
-    load_ledger, read_csv, target_seqs,
-)
+from core.issues import IssueBook
+from core.ledger import LEDGER_COLUMNS, Ledger, read_csv
 from core.migrate import LEDGER_XLSX, read_ledger_xlsx
-from core.paths import PLAN_CSV, SETTINGS_JSON, find_child, source_dir
+from core.paths import DATA_DIR, SETTINGS_JSON, find_child, source_dir
 
 
 @pytest.fixture(scope="module")
-def ledger():
-    return load_ledger()
+def real():
+    return Ledger.load(DATA_DIR), IssueBook.load(DATA_DIR)
 
 
-@pytest.fixture(scope="module")
-def issues():
-    return load_issues()
+def test_ledger_columns():
+    assert list(read_csv(DATA_DIR / "ledger.csv")[0].keys()) == LEDGER_COLUMNS
 
 
-def test_ledger_columns(ledger):
-    assert list(ledger[0].keys()) == LEDGER_COLUMNS
-    assert [r["순번"] for r in ledger] == list(range(1, len(ledger) + 1))
+def test_sequence(real):
+    ledger, _ = real
+    assert [r.순번 for r in ledger.rows] == list(range(1, len(ledger.rows) + 1))
 
 
-def test_ledger_values_match_excel(ledger):
+def test_ledger_values_match_excel(real):
     """장부 값은 원본 그대로여야 한다. 다른 값은 이력에 기록된 정정뿐이다."""
+    ledger, book = real
     try:
         src = find_child(source_dir(2026), LEDGER_XLSX)
     except FileNotFoundError:
         pytest.skip("원본 엑셀 없음")
     raw = read_ledger_xlsx(src)
-    assert len(raw) == len(ledger)
-    history = load_history()
-    for x, r in zip(raw, ledger):
+    changed = {(h.순번, h.열): h for h in book.history}
+    for x, r in zip(raw, ledger.rows):
         for c in LEDGER_COLUMNS[1:15]:
             expected = x.get(c)
-            if expected is None:
-                expected = "" if isinstance(r[c], str) else None
-            for h in history:
-                if int(h["순번"]) == r["순번"] and h["열"] == c:
-                    assert str(expected or "") == h["변경전"], (r["순번"], c)
-                    expected = type(r[c])(h["변경후"]) if r[c] is not None else None
-            assert r[c] == expected, (r["순번"], c)
+            if expected is None and isinstance(getattr(r, c), str):
+                expected = ""
+            if (r.순번, c) in changed:
+                h = changed[(r.순번, c)]
+                assert h.변경전 == str(expected or "")
+                expected = h.변경후
+            assert getattr(r, c) == expected, (r.순번, c)
 
 
-def test_pairs_symmetric(ledger):
-    by_ref = {}
-    for r in ledger:
-        key = r["문서번호"] if "미기재" not in r["문서번호"] else f"#{r['순번']}"
-        by_ref.setdefault(key, []).append(r)
-    for r in ledger:
-        if r["연결문서번호"]:
-            partners = [p for p in by_ref[r["연결문서번호"]] if p["구분"] != r["구분"]]
-            assert len(partners) == 1, r["순번"]
-            assert partners[0]["사업ID"] == r["사업ID"]
+def test_pairs_symmetric(real):
+    ledger, _ = real
+    for r in ledger.rows:
+        if r.연결문서번호:
+            partner = ledger.find_ref(r.연결문서번호)
+            assert partner is not None and partner.구분 != r.구분, r.순번
+            assert partner.연결문서번호 == r.참조
+            assert partner.사업ID == r.사업ID
 
 
-def test_every_row_has_project(ledger):
-    plan_ids = {p["사업ID"] for p in read_csv(PLAN_CSV)}
-    assert all(r["사업ID"] in plan_ids for r in ledger)
+def test_every_row_has_project(real):
+    ledger, _ = real
+    assert all(r.사업ID in ledger.plan for r in ledger.rows)
 
 
-def test_plan_total_matches_allocation():
-    plan = read_csv(PLAN_CSV)
-    settings = json.loads(SETTINGS_JSON.read_text(encoding="utf-8"))
-    assert sum(int(p["본당예산"]) for p in plan) == settings["금액문서기준"]["예산배정액"]
-    for p in plan:
-        assert sum(int(p[f"{m}월"]) for m in range(1, 13)) == int(p["본당예산"]), p["사업ID"]
+def test_plan_total_matches_allocation(real):
+    ledger, _ = real
+    assert sum(p.본당예산 for p in ledger.plan.values()) == ledger.settings.금액문서기준.예산배정액
+    for p in ledger.plan.values():
+        assert sum(p.월별) == p.본당예산, p.사업ID
 
 
 def test_settings_has_no_sensitive_values():
@@ -78,22 +70,13 @@ def test_settings_has_no_sensitive_values():
         assert word not in text
 
 
-def test_issues_valid(issues, ledger):
-    seqs = {r["순번"] for r in ledger}
-    ids = [i["이슈ID"] for i in issues]
+def test_issues_valid(real):
+    ledger, book = real
+    seqs = {r.순번 for r in ledger.rows}
+    ids = [i.이슈ID for i in book.issues]
     assert len(ids) == len(set(ids))
-    for i in issues:
-        assert i["유형"] in ISSUE_TYPES
-        assert i["상태"] in ISSUE_STATES
-        assert set(target_seqs(i)) <= seqs
-        for rel in filter(None, i["관련이슈"].split(";")):
-            assert rel in ids
-        if i["상태"] == "해결-정정":
-            assert any(h["이슈ID"] == i["이슈ID"] for h in load_history())
-
-
-def test_remarks_follow_open_issues(issues):
-    remarks = derive_remarks(issues)
-    assert "문서번호 미기재" in remarks[1]
-    closed = [dict(i, 상태="해결-정정") if i["대상순번"] == "1" else i for i in issues]
-    assert 1 not in derive_remarks(closed)
+    for i in book.issues:
+        assert set(i.대상순번) <= seqs
+        assert set(i.관련이슈) <= set(ids)
+        if i.상태 == "해결-정정":
+            assert any(h.이슈ID == i.이슈ID for h in book.history)

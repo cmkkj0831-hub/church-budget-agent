@@ -1,5 +1,6 @@
 streamlit>=1.40
 pandas>=2.2
+pydantic>=2.7
 openpyxl>=3.1
 olefile>=0.47
 anthropic>=0.60
