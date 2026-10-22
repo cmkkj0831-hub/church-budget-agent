@@ -6,16 +6,15 @@ from datetime import date, datetime
 
 import pytest
 
-from core.models import LineItem, ReportDoc, RequestDoc
+from core.models import AccountInfo, LineItem, ReportDoc, RequestDoc
 from core.secrets import apply_secrets
-from core.validate import validate_request
-from hwpx.fill import REPORT_CELLS, REQUEST_CELLS, REPORT_TEMPLATE, REQUEST_TEMPLATE, render, render_committed
-from hwpx.text import read_cells
 from core.paths import TEMPLATES_DIR
+from hwpx.fill import REPORT_CELLS, REQUEST_CELLS, REPORT_TEMPLATE, REQUEST_TEMPLATE, render, render_committed
+from hwpx.layout import SENSITIVE
+from hwpx.text import read_cells
 from tests.conftest import TODAY
 
 EXAMPLES = TEMPLATES_DIR / "examples"
-SENSITIVE = ("기안자연락처", "기안단체장연락처", "은행명", "계좌번호", "예금주")
 
 COMMON = dict(작성일=date(2026, 5, 9), 행사명="초등부 어린이 날 행사", 주관단체="초등부 교사회",
               기안자="정연재 레오", 기안단체장="정지연 플로라", 목적="어린이 날 행사 진행",
@@ -94,14 +93,6 @@ def test_special_characters_escaped(tmp_path):
     assert cells[REQUEST_CELLS["행사명"]] == ["A & B <행사>"]
 
 
-def test_too_many_items_blocked(ledger, tmp_path):
-    items = [LineItem(내용=f"항목{i}", 단가=1_000) for i in range(8)]
-    doc = CHILDRENS_REQUEST.model_copy(update={"세부내역": items})
-    assert "too_many_items" in {f.코드 for f in validate_request(doc, ledger, today=TODAY)}
-    with pytest.raises(ValueError):
-        render(doc, tmp_path / "a.hwpx")
-
-
 def test_post_settlement_files(ledger, tmp_path):
     report = ReportDoc(월=10, 사업ID="P12", 행사명="10월 교리 준비비", 작성일=date(2026, 10, 24),
                        경과보고="10월 교리 준비물을 구입하였습니다.",
@@ -120,9 +111,16 @@ def test_post_settlement_files(ledger, tmp_path):
     assert rep[REPORT_CELLS["작성일"]] == req[REQUEST_CELLS["작성일"]] == [" 2026년 10월 24일"]
 
 
-def test_apply_secrets_fills_blanks_only():
-    secrets = {"연락처": {"기안자": "010-0000-0000"}, "계좌": {"은행명": "테스트은행", "예금주": "홍길동"}}
-    doc = CHILDRENS_REQUEST.model_copy(update={"예금주": "박지우"})
+def test_apply_secrets_priority():
+    """계좌 칸별: doc.계좌_override > secrets 계좌_문서별 > 문서에 적힌 값 > secrets 기본."""
+    secrets = {"연락처": {"기안자": "010-0000-0000"},
+               "계좌": {"은행명": "기본은행", "계좌번호": "000-0", "예금주": "기본예금주"},
+               "계좌_문서별": {"(예)2026-024": {"예금주": "문서별예금주"}}}
+    out = apply_secrets(CHILDRENS_REQUEST, secrets)
+    assert (out.기안자연락처, out.은행명, out.계좌번호, out.예금주) == \
+        ("010-0000-0000", "기본은행", "000-0", "문서별예금주")
+    doc = CHILDRENS_REQUEST.model_copy(update={"은행명": "문서은행",
+                                               "계좌_override": AccountInfo(예금주="덮어쓰기", 계좌번호="")})
     out = apply_secrets(doc, secrets)
-    assert (out.기안자연락처, out.은행명, out.예금주) == ("010-0000-0000", "테스트은행", "박지우")
+    assert (out.은행명, out.계좌번호, out.예금주) == ("문서은행", "000-0", "덮어쓰기")
     assert CHILDRENS_REQUEST.기안자연락처 == ""  # 원본은 그대로

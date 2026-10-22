@@ -70,14 +70,21 @@ def _hwpx_lines(path) -> list[str]:
             for p in re.findall(r"<hp:p\b.*?</hp:p>", xml, re.S)]
 
 
+def cells_from_xml(xml: str) -> dict[tuple[int, int], list[str]]:
+    """section XML의 표 칸 → 문단 텍스트 목록. 키는 (행, 열)."""
+    cells = {}
+    for tc in re.findall(r"<hp:tc\b.*?</hp:tc>", xml, re.S):
+        a = re.search(r'colAddr="(\d+)" rowAddr="(\d+)"', tc)
+        cells[(int(a.group(2)), int(a.group(1)))] = [
+            _para_text(p) for p in re.findall(r"<hp:p\b.*?</hp:p>", tc, re.S)]
+    return cells
+
+
 def read_cells(path) -> dict[tuple[int, int], list[str]]:
     """hwpx 표 칸 → 문단 텍스트 목록. 키는 (행, 열)."""
     cells = {}
     for xml in _sections(path):
-        for tc in re.findall(r"<hp:tc\b.*?</hp:tc>", xml, re.S):
-            a = re.search(r'colAddr="(\d+)" rowAddr="(\d+)"', tc)
-            cells[(int(a.group(2)), int(a.group(1)))] = [
-                _para_text(p) for p in re.findall(r"<hp:p\b.*?</hp:p>", tc, re.S)]
+        cells.update(cells_from_xml(xml))
     return cells
 
 

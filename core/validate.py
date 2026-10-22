@@ -31,11 +31,12 @@ def won(n) -> str:
 
 # ---------------------------------------------------------------- 문서 검증
 
-def check_line_items(doc) -> list[Finding]:
+def check_line_items(doc, row_mode: str = "clone") -> list[Finding]:
     out = []
-    if len(doc.세부내역) > MAX_LINE_ITEMS:
+    accounts = {i.계정과목 for i in doc.세부내역}
+    if row_mode == "group" and len(doc.세부내역) > MAX_LINE_ITEMS and len(accounts) > MAX_LINE_ITEMS:
         out.append(_err("too_many_items", "기재 오류",
-                        f"세부내역 {len(doc.세부내역)}건 > 양식 칸 {MAX_LINE_ITEMS}건(항목을 묶어 주세요)"))
+                        f"계정과목 {len(accounts)}종 > 양식 칸 {MAX_LINE_ITEMS}행: 묶기(group)로 맞출 수 없음"))
     for i in doc.세부내역:
         if i.금액 is not None and i.단가 * i.수량 != i.금액:
             out.append(_err("line_amount", "계산 불일치",
@@ -92,7 +93,7 @@ def check_doc_numbers(docs, ledger) -> list[Finding]:
 
 
 def validate_request(doc: RequestDoc, ledger, today: date | None = None) -> list[Finding]:
-    out = check_line_items(doc)
+    out = check_line_items(doc, ledger.settings.hwpx_row_mode)
     no = [doc.문서번호] if doc.문서번호 else []
     detail = doc.세부합()
     if doc.합계 is None:
@@ -137,7 +138,7 @@ def validate_request(doc: RequestDoc, ledger, today: date | None = None) -> list
 
 
 def validate_report(doc: ReportDoc, ledger, request=None, today: date | None = None) -> list[Finding]:
-    out = check_line_items(doc)
+    out = check_line_items(doc, ledger.settings.hwpx_row_mode)
     no = [doc.문서번호] if doc.문서번호 else []
     detail = doc.세부합()
     if doc.합계B is None:

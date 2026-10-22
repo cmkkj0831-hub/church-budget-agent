@@ -21,10 +21,14 @@ core/       장부·이슈·계산 엔진 (순수 Python, UI·LLM 의존성 없�
               apply_resolution — 장부 정정과 이력 기록의 유일한 경로
   export.py   장부+이슈 → 회계내역 xlsx (python -m core.export → out/)
   migrate.py  2026 엑셀 → data/ 1회 이관 (python -m core.migrate). --force는 이슈 처리·이력을 지우므로 쓰지 않는다
-  secrets.py  .streamlit/secrets.toml 읽기, apply_secrets(문서의 빈 연락처·계좌 칸만 채움)
+  secrets.py  .streamlit/secrets.toml 읽기, apply_secrets(연락처·계좌 채움, 계좌 우선순위 아래 참고)
 hwpx/       hwpx 읽기·생성
-  text.py     hwp/hwpx 텍스트 추출(extract_text), hwpx 표 칸 읽기(read_cells)
-  fill.py     양식 칸 주소(REQUEST_CELLS/REPORT_CELLS)에 값 채우기 → render, render_committed(out/{월}/{파일명})
+  text.py     hwp/hwpx 텍스트 추출(extract_text), hwpx 표 칸 읽기(read_cells, cells_from_xml)
+  layout.py   서식1·2 칸 매핑(라벨 기반 resolve) — fill·reader 공용. 빈 양식 기준 주소 REQUEST_CELLS/REPORT_CELLS
+  table.py    세부내역 행 복제(expand_item_rows): rowAddr·rowCnt·표 높이·병합 rowSpan 조정, 쪽 나눔 CELL
+  fill.py     문서 → hwpx(render, render_committed → out/{월}/{파일명}), 세부내역 clone/group
+  reader.py   hwpx → RequestDoc/ReportDoc(read_document): 서식 판별, 읽기 실패 칸 목록
+  receipts.py 영수증 첨부 docx(build_receipts_docx): 이미지/PDF, EXIF 회전, 여백 자르기, 페이지 폭 맞춤
 agents/     Claude API 호출(정보 추출·문장 작성)
 data/       장부와 설정(커밋 대상)
   ledger.csv         문서 1건 = 1행. 비고 열 없음
@@ -75,6 +79,10 @@ out/        생성 결과물 — 커밋 금지
 - 교사회 운영비 = 운영비단가 × 교사수
 - 월 폴더 = 사업이 속한 월(작성일 기준 아님)
 - 파일명: `{월내순번}_{행사명}_{신청서|보고서}.hwpx`
+- 세부내역이 양식 7행을 넘으면 settings `hwpx_row_mode`: `clone`(기본, 마지막 빈 행 복제 — 표가 한 쪽을 넘으면 다음 쪽으로)
+  | `group`(같은 계정과목의 뒤쪽 항목을 "내용 외 N건"으로 묶어 7행에 맞춤, 금액 합산·단가·수량 비움, 많은 계정과목부터 필요한 만큼만)
+- 계좌(은행명·계좌번호·예금주)는 칸별로 `문서.계좌_override` > secrets `[계좌_문서별."문서번호"]` > 문서에 적힌 값 > secrets `[계좌]` 순.
+  예금주가 문서마다 다를 수 있다(5단계 UI에서 계좌_override로 입력).
 - 금액·누계·번호 계산은 반드시 코드가 한다. LLM은 정보 추출과 문장 작성만 한다.
 
 ## 이슈 규칙
@@ -116,10 +124,12 @@ out/        생성 결과물 — 커밋 금지
   - I-023 등록(예산 경고): P11 실집행 4,598,000 > 계획 4,320,000, 연말 예상 5,678,000
   - I-024·025(순번 21·22, 기재 오류, 해결-설명됨): 4월 전환기 보고서 본당란에 신청액 기재, 반납액 정확 → 장부 원본 유지. scan_ledger 미등록 후보 0건
   - 이력 파일 ledger_history.csv → history.csv, 다음문서번호 53
-- [ ] 3단계 (진행 중) hwpx 템플릿 채우기(hwpx/) — 사용자 한글 확인 대기
-  - 표 구조는 그대로 두고 칸 문단만 교체(바뀐 문단의 linesegarray 제거 → 한글이 다시 배치). 세부내역 최대 7행(초과 시 생성 차단)
-  - 5월 어린이날 신청서·보고서를 데이터로 재생성해 실제 예시와 칸별 일치(민감 칸 제외) — tests/test_hwpx.py
+- [ ] 3단계 (진행 중) hwpx 생성·읽기, 영수증 첨부 — 사용자 한글 확인 대기
+  - 표 구조는 그대로 두고 칸 문단만 교체(바뀐 문단의 linesegarray 제거 → 한글이 다시 배치)
+  - 칸 매핑은 라벨 기반: 작성자가 표를 고친 문서(8월 신앙캠프 보고서는 열이 합쳐짐)도 읽힘
+  - 검증: 5월 어린이날 재생성이 실제 예시와 칸별 일치, 예시 4건 reader 값 = 장부, 1·7·12건 왕복 일치(tests/test_hwpx*.py)
   - 계정과목은 모든 항목이 같으면 첫 행에만 기재(예시는 칸 병합). 행사유형 칸은 표시하지 않음
+  - LibreOffice는 hwpx를 열지 못해 렌더링은 한글에서 확인 필요. 영수증 docx 글꼴 기본 맑은 고딕
   - 샘플: out/샘플/ (커밋 제외)
 - [ ] 4단계 Claude 연동: 영수증·메모에서 정보 추출, 경과보고 문장 작성(agents/)
 - [ ] 5단계 Streamlit 대시보드(app/)

@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 DocKind = Literal["예산신청서", "집행보고서"]
 EventType = Literal["행사·교육·피정", "성지순례·친교·기타"]
 IssueType = Literal["계산 불일치", "누계 누락", "기재 오류", "문서 누락", "번호 중복", "미확인", "예산 경고"]
-MAX_LINE_ITEMS = 7  # 양식 세부내역 칸 수(신청서·보고서 공통)
+MAX_LINE_ITEMS = 7  # 양식 세부내역 기본 칸 수(신청서·보고서 공통). 넘으면 행 복제 또는 묶기
+RowMode = Literal["clone", "group"]
 FormKind = Literal["구", "신"]  # 구: 1~4월 초 양식(보고서 '반납금액' 칸, 신청서 보좌신부 결재란)
 IssueState = Literal["미해결", "확인중", "해결-정정", "해결-설명됨"]
 
@@ -20,6 +21,13 @@ class LineItem(BaseModel):
     수량: int = 1
     금액: int | None = None  # None이면 build 시 단가 × 수량
     비고: str = ""
+
+
+class AccountInfo(BaseModel):
+    """계좌 정보. 민감값이라 장부·설정에 저장하지 않는다."""
+    은행명: str = ""
+    계좌번호: str = ""
+    예금주: str = ""
 
 
 class DocBase(BaseModel):
@@ -47,6 +55,7 @@ class DocBase(BaseModel):
     은행명: str = ""              # secrets에서 채움, 저장하지 않음
     계좌번호: str = ""
     예금주: str = ""
+    계좌_override: AccountInfo | None = None  # 문서별 계좌(예: 예금주가 다른 부서 운영비). 빈 칸은 무시
     참가대상: str = ""
     인원_총: int | None = None
     인원_남: int | None = None
@@ -152,6 +161,7 @@ class Settings(BaseModel):
     금액문서기준: DocRules
     교사명단: list[str]
     모델: str
+    hwpx_row_mode: RowMode = "clone"  # 세부내역이 양식 칸보다 많을 때: clone(행 복제) | group(계정과목별 묶기)
 
 
 class PlanItem(BaseModel):
@@ -185,6 +195,16 @@ class Issue(BaseModel):
     @property
     def 열림(self) -> bool:
         return self.상태 in ("미해결", "확인중")
+
+
+class Receipt(BaseModel):
+    """영수증 첨부 1건. 이미지는 jpg/png/heic 또는 pdf(첫 쪽)."""
+    순번: int
+    이미지: str
+    날짜: date | None = None
+    상호: str = ""
+    금액: int | None = None
+    용도: str = ""
 
 
 class LedgerChange(BaseModel):

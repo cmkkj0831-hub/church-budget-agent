@@ -40,5 +40,6 @@
     "정하영 실비아",
     "조민기 사도요한"
   ],
-  "모델": "claude-sonnet-5-5"
+  "모델": "claude-sonnet-5-5",
+  "hwpx_row_mode": "clone"
 }
