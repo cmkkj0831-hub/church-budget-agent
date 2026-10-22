@@ -1,0 +1,27 @@
+# 원본 문서·영수증 (2026년/ 폴더, NFD/NFC 모두)
+/2026*/
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.pdf
+
+# 실제 작성 예시(연락처·계좌 포함)
+templates/examples/
+
+# 생성 결과물
+out/
+
+# 비밀값
+.streamlit/secrets.toml
+.env
+
+# 환경
+budget_env/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+desktop.ini
+~$*
