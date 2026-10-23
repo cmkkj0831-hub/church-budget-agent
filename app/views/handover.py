@@ -51,8 +51,9 @@ with tab_pack:
             if p.exists():
                 files[f"{L.year}/{name}"] = p.read_bytes()
         files["settings.json(민감값 제외).json"] = (ws / "settings.json").read_bytes()
-        if MANUAL.exists():
-            files["사용설명서.md"] = MANUAL.read_bytes()
+        for doc in (MANUAL, MANUAL.with_name("회계담당_접속안내.md")):
+            if doc.exists():
+                files[doc.name] = doc.read_bytes()
         ss.handover_zip = lib.zip_bytes(files)
         ss.handover_files = list(files)
     if ss.get("handover_zip"):

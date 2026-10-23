@@ -130,6 +130,38 @@ def test_password_change_and_private_settings(data):
     assert start(ADMIN_PW).session_state["recovery"]  # 비상 복구 경로
 
 
+def test_first_login_starts_at_settings_until_private_saved(data):
+    at = start(ADMIN_PW)
+    assert at.title[0].value.startswith("⚙️") and any("처음 접속" in i.value for i in at.info)
+    next(t for t in at.toggle if t.key == "set_show").set_value(True)
+    run_ok(at)
+    next(t for t in at.text_input if t.label == "기안자 연락처").input("010-0000-0000")
+    next(b for b in at.button if b.label == "저장").click()
+    run_ok(at)
+    assert start(ADMIN_PW).title[0].value.startswith("📊")  # 저장 뒤에는 대시보드부터
+
+
+def test_wrong_settings_key_never_overwrites_private(data):
+    at = go(start(ADMIN_PW), "views/settings.py")
+    next(t for t in at.toggle if t.key == "set_show").set_value(True)
+    run_ok(at)
+    next(t for t in at.text_input if t.label == "예금주").input("홍길동")
+    next(b for b in at.button if b.label == "저장").click()
+    run_ok(at)
+    before = (data / "settings_private.enc").read_bytes()
+    at = AppTest.from_file(APP, default_timeout=60)
+    at.secrets["ADMIN_PASSWORD"] = ADMIN_PW
+    at.secrets["SETTINGS_KEY"] = new_key()  # 다른 키
+    run_ok(at)
+    at.text_input[0].input(ADMIN_PW)
+    at.button[0].click().run()
+    assert at.title[0].value.startswith("⚙️") and any("읽지 못했습니다" in e.value for e in at.error)
+    next(b for b in at.button if b.label == "저장").click()
+    run_ok(at)
+    assert any("저장하지 않았습니다" in e.value for e in at.error)
+    assert (data / "settings_private.enc").read_bytes() == before
+
+
 # ---------------------------------------------------------------- 신청 → 보고 → 사후정산 → 대시보드
 
 CHRISTMAS = {
@@ -342,5 +374,5 @@ def test_handover_package(data):
     button(at, "인수인계 패키지 만들기").click()
     run_ok(at)
     files = at.session_state["handover_files"]
-    assert "사용설명서.md" in files and "2026_회계내역.xlsx" in files and "settings.json(민감값 제외).json" in files
+    assert "사용설명서.md" in files and "회계담당_접속안내.md" in files and "2026_회계내역.xlsx" in files and "settings.json(민감값 제외).json" in files
     assert not any(f.endswith(".enc") for f in files)

@@ -24,9 +24,10 @@
 - **LLM 사용량**: 모든 호출을 data/{연도}/usage.csv에 기록(시각, 기능, 모델, 요청모델, 대체모델, 입력·출력 토큰, 소요초, APP_ENV).
   토큰 단가·환율은 설정(`사용량단가`)에서 입력하고 코드에 고정하지 않는다.
 
-- Python 3.11+ (로컬 venv `budget_env/`는 3.13), Streamlit, Claude API(모델은 `data/settings.json`의 `모델`)
-- 실행: `budget_env/bin/pip install -r requirements.txt`, 테스트 `budget_env/bin/python -m pytest tests`
+- Python 3.13(로컬 venv `budget_env/`와 Streamlit Cloud 동일), Streamlit, Claude API(모델은 `data/settings.json`의 `모델`)
+- 실행: `budget_env/bin/pip install -r requirements-dev.txt`(requirements.txt는 버전 고정, dev는 + pytest), 테스트 `budget_env/bin/python -m pytest tests`
   (실제 API 스모크: `pytest tests/test_agents_live.py --live`, 단위 테스트는 tests/fakes.FakeClient로 API 대역)
+- 개발자용 실행·배포·비상 복구 절차는 README.md
 - 파일명은 맥 NFD일 수 있다. 경로·이름 비교는 항상 `core.paths.nfc()` / `find_child()`로 NFC 정규화한다.
 - 원본 폴더 이름은 `2026년/`이다(`core.paths.source_dir()`가 `2026년`·`2026` 모두 찾음). 읽기 전용으로 다룬다.
 
@@ -53,7 +54,7 @@ core/       장부·이슈·계산 엔진 (순수 Python, UI·LLM 의존성 없�
   secrets.py  .streamlit/secrets.toml 읽기, apply_secrets(연락처·계좌 채움, 계좌 우선순위 아래 참고)
   storage.py  저장 계층: 세션별 data/ 전체 작업 사본(Workspace, 상대 경로) → commit(바뀐·새 파일). LocalStorage(내용 해시)·
               GitHubStorage(PyGithub, 파일 sha, 한 커밋, 바이너리는 blob), 받은 뒤 원본이 바뀌었으면 ConflictError.
-              secrets에 GITHUB_TOKEN이 있으면 GitHub 모드(GITHUB_REPO, DATA_BRANCH)
+              secrets에 GITHUB_TOKEN이 있으면 GitHub 모드(GITHUB_REPO, DATA_BRANCH 기본 "data")
   changes.py  반영 단위 이력(record_unit: snapshot 대비 장부 칸·행 추가/삭제·이슈 추가/필드 변경을 같은 이력ID로)과
               되돌리기(undo_unit), units(반영 목록)
   private.py  settings_private.enc(Fernet) 읽기·쓰기, 관리자 비밀번호(bcrypt) 확인·변경, mask
@@ -80,6 +81,8 @@ agents/     Claude API 호출(정보 추출·문장 작성만. 계산·검증은
   issue_agent.py      이슈 + 사용자 설명 + 첨부 hwpx → 해결 제안(정정/설명/추가 확인 필요), 장부 복사본에 적용해 검증
   plan_agent.py       사업계획서 사진 → 사업 행(금액은 적힌 그대로 + 단위, 원 환산·검증은 코드)
 scripts/    eval_extraction.py(8월 신앙학교 영수증 추출 ↔ 보고서 금액 비교, 실제 API 호출)
+            gen_settings_key.py(SETTINGS_KEY 생성 + 분실 경고), check_cloud.py(secrets·GitHub 읽기/임시 브랜치 쓰기·복호화·
+            Claude 1회·hwpx 왕복·xlsx 점검 표, 비밀값 출력 없음, 운영 브랜치는 읽기만)
 data/       장부와 설정(커밋 대상)
   settings.json        현재 회계연도, 기본·기안·금액·문서 기준, 연도별(배정액·다음 번호·마감), 교사명단, 모델, 사용량단가,
                        진행상태(연도 전환·인수인계) — 민감값 없음
@@ -87,7 +90,8 @@ data/       장부와 설정(커밋 대상)
   {연도}/ledger.csv    문서 1건 = 1행. 비고 열 없음
   {연도}/plan.csv      사업계획(원 단위), 1월~12월 배분 / plan_info.csv 개요·비고
   {연도}/issues.csv    이슈 / history.csv 반영 단위 이력(이력ID 같은 행 = 한 반영) / usage.csv LLM 사용량
-docs/       사용설명서.md(앱 '인수인계' 화면에서도 보임)
+docs/       사용설명서.md(앱 '인수인계' 화면에서도 보임), 회계담당_접속안내.md(한 페이지)
+.streamlit/ config.toml(테마, 업로드 한 파일 30MB — 커밋), secrets.toml.example(커밋), secrets.toml(커밋 금지)
 tests/      pytest
 templates/  request_template.hwpx, report_template.hwpx (빈 공식 양식)
 templates/examples/  실제 작성 예시 — 커밋 금지
@@ -172,6 +176,10 @@ out/        생성 결과물 — 커밋 금지
 - 민감값(연락처, 은행명, 계좌번호, 예금주)은 settings.json에 넣지 않는다. `data/settings_private.enc`(Fernet, 키는 secrets
   `SETTINGS_KEY`)에 암호화해 두고 앱 설정 화면에서 고친다(`secrets.toml.example` 참고).
 - 커밋 전 `git status`로 확인한다.
+- 브랜치: 앱 코드는 `main`(Streamlit Cloud 배포 브랜치), 장부는 `data` 브랜치에 앱이 커밋한다(배포 브랜치에 push가 생기면
+  앱이 재시작되므로 분리). 배포 후 장부 원본은 `data` 브랜치 — main의 data/는 배포 시점 사본이며 두 브랜치를 merge하지 않는다.
+  `data/settings_private.enc`는 암호화 파일이라 data 브랜치에 커밋된다.
+- 운영 데이터(data 브랜치, 로컬 data/2026)로 시험하지 않는다. 시험은 사본(BUDGET_DATA_DIR) 또는 임시 브랜치(check_cloud.py).
 
 ## 진행 상황
 
@@ -186,7 +194,7 @@ out/        생성 결과물 — 커밋 금지
   - I-023 등록(예산 경고): P11 실집행 4,598,000 > 계획 4,320,000, 연말 예상 5,678,000
   - I-024·025(순번 21·22, 기재 오류, 해결-설명됨): 4월 전환기 보고서 본당란에 신청액 기재, 반납액 정확 → 장부 원본 유지. scan_ledger 미등록 후보 0건
   - 이력 파일 ledger_history.csv → history.csv, 다음문서번호 53
-- [ ] 3단계 (진행 중) hwpx 생성·읽기, 영수증 첨부 — 사용자 한글 확인 대기
+- [x] 3단계 (2026-10-23) hwpx 생성·읽기, 영수증 첨부 — 사용자 한글 확인 완료(out/샘플/ 7개, 6단계 배포 전)
   - 표 구조는 그대로 두고 칸 문단만 교체(바뀐 문단의 linesegarray 제거 → 한글이 다시 배치)
   - 칸 매핑은 라벨 기반: 작성자가 표를 고친 문서(8월 신앙캠프 보고서는 열이 합쳐짐)도 읽힘
   - 검증: 5월 어린이날 재생성이 실제 예시와 칸별 일치, 예시 4건 reader 값 = 장부, 1·7·12건 왕복 일치(tests/test_hwpx*.py)
@@ -211,3 +219,8 @@ out/        생성 결과물 — 커밋 금지
   - 누계 단절(cumulative_breaks)은 자기 누계가 재계산과 같은 문서(차이 0)를 제외(앞 오류를 바로잡은 곳)
   - 이슈 해결로 뒤 문서의 누계가 새로 어긋나면 반영 전 경고(ResolutionResult.경고)
   - 테스트: tests/test_app.py(AppTest 시나리오, FakeClient), tests/test_storage.py(로컬·GitHub 대역)
+- [ ] 6단계 (진행 중) Streamlit Community Cloud 배포 — 저장소 cmkkj0831-hub/church-budget-agent(비공개)
+  - 버전 고정(requirements.txt, Python 3.13), .streamlit/config.toml, DATA_BRANCH 기본 "data"
+  - 첫 접속(settings_private.enc 없음·비어 있음·복호화 실패)이면 ADMIN은 설정 화면에서 시작(Home.py `default`)
+  - 복호화 실패 상태에서는 민감 설정 저장을 막는다(빈 값으로 덮어쓰기 방지, `lib.save_settings_and_private`)
+  - 문서: README.md(개발자), docs/사용설명서.md(첫날 가이드·자주 하는 실수 추가), docs/회계담당_접속안내.md

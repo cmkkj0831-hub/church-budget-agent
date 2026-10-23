@@ -171,5 +171,5 @@ def storage_from_secrets(secrets, default_dir) -> Storage:
     if secrets.get("GITHUB_TOKEN"):
         from github import Auth, Github
         repo = Github(auth=Auth.Token(secrets["GITHUB_TOKEN"])).get_repo(secrets["GITHUB_REPO"])
-        return GitHubStorage(repo, secrets.get("DATA_BRANCH", "main"), secrets.get("GITHUB_DATA_PREFIX", "data/"))
+        return GitHubStorage(repo, secrets.get("DATA_BRANCH", "data"), secrets.get("GITHUB_DATA_PREFIX", "data/"))
     return LocalStorage(os.environ.get("BUDGET_DATA_DIR") or secrets.get("DATA_DIR") or default_dir)

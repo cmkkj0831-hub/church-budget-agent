@@ -12,6 +12,11 @@ s = L.settings
 st.title("⚙️ 설정")
 if st.session_state.get("private_error"):
     st.error(f"민감 설정을 읽지 못했습니다: {st.session_state.private_error}")
+elif lib.needs_setup():
+    st.info("처음 접속하셨습니다. 아래 순서로 설정해 주세요.\n\n"
+            "1. **관리자** 탭에서 내 비밀번호로 바꾸기\n"
+            "2. **기본 정보·연락처** 탭에서 [연락처·계좌 보기]를 켜고 연락처·계좌를 넣은 뒤 저장\n"
+            "3. 왼쪽 **인수인계**에서 체크리스트 확인")
 
 tab_basic, tab_rules, tab_ai, tab_admin = st.tabs(["기본 정보·연락처", "금액·문서 양식", "Claude 모델·사용량 단가", "관리자"])
 

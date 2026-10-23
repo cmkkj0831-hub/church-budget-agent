@@ -1,0 +1,17 @@
+[server]
+# 업로드 한 파일당 최대 크기(MB). 휴대폰 사진 1장은 보통 3~8MB, 스캔 PDF는 더 클 수 있다.
+# 여러 장은 파일마다 따로 센다. Streamlit Cloud 메모리(약 1GB)를 고려해 기본값 200MB보다 낮춘다.
+maxUploadSize = 30
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "viewer"
+
+[theme]
+base = "light"
+primaryColor = "#1F4E79"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F5F9"
+textColor = "#1A1A1A"

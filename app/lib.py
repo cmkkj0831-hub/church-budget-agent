@@ -124,6 +124,14 @@ def load(force: bool = False, year: int | None = None) -> None:
     set_usage_hook(_record_usage)
 
 
+def needs_setup() -> bool:
+    """첫 접속: 민감 설정 파일이 없거나 비어 있으면(비밀번호·연락처·계좌 모두 없음) 설정부터 하도록 안내."""
+    load()
+    ss = st.session_state
+    return bool(ss.private_error) or not (ss.ws.path / "settings_private.enc").exists() \
+        or ss.private == PrivateSettings()
+
+
 def ledger() -> Ledger:
     load()
     return st.session_state.ledger
@@ -182,6 +190,10 @@ def undo(unit: str) -> str | None:
 def save_settings_and_private(message: str, settings=None, private_settings=None) -> bool:
     """설정(settings.json)과 민감 설정(settings_private.enc, 암호화)을 저장·커밋."""
     ss = st.session_state
+    if private_settings is not None and ss.get("private_error"):
+        # 키가 틀려 못 읽은 상태에서 저장하면 기존 암호화 설정을 빈 값으로 덮어쓴다
+        st.error("민감 설정을 읽지 못해 저장하지 않았습니다. secrets의 SETTINGS_KEY를 확인하세요.")
+        return False
     if settings is not None:
         save_settings(settings, ss.ws.path)
     if private_settings is not None:

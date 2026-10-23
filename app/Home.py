@@ -11,13 +11,16 @@ st.set_page_config(page_title="초등부 교사회 예산", page_icon="⛪", lay
 if not lib.role():
     lib.login()
 
+lib.load()
+# 첫 접속(민감 설정 없음)이면 관리자는 설정 화면에서 시작한다
+setup = lib.is_admin() and lib.needs_setup()
 pages = {
     "request": st.Page("views/request.py", title="예산 신청서", icon="📝"),
     "report": st.Page("views/report.py", title="집행 보고서", icon="🧾"),
     "post": st.Page("views/post_settlement.py", title="사후 정산", icon="🔁"),
     "issues": st.Page("views/issues.py", title="오류 관리", icon="⚠️"),
-    "dashboard": st.Page("views/dashboard.py", title="대시보드", icon="📊", default=True),
-    "settings": st.Page("views/settings.py", title="설정", icon="⚙️"),
+    "dashboard": st.Page("views/dashboard.py", title="대시보드", icon="📊", default=not setup),
+    "settings": st.Page("views/settings.py", title="설정", icon="⚙️", default=setup),
     "year": st.Page("views/year.py", title="회계연도 전환", icon="🗓️"),
     "handover": st.Page("views/handover.py", title="인수인계", icon="📋"),
 }
@@ -31,7 +34,6 @@ with st.sidebar:
             if not k.startswith("_llm") and k != "_today":
                 del st.session_state[k]
         st.rerun()
-lib.load()
 lib.reload_button()
 lib.topbar()
 st.navigation(visible).run()
