@@ -4,6 +4,7 @@
 
 - Python 3.11+ (로컬 venv `budget_env/`는 3.13), Streamlit, Claude API(모델은 `data/settings.json`의 `모델`)
 - 실행: `budget_env/bin/pip install -r requirements.txt`, 테스트 `budget_env/bin/python -m pytest tests`
+  (실제 API 스모크: `pytest tests/test_agents_live.py --live`, 단위 테스트는 tests/fakes.FakeClient로 API 대역)
 - 파일명은 맥 NFD일 수 있다. 경로·이름 비교는 항상 `core.paths.nfc()` / `find_child()`로 NFC 정규화한다.
 - 원본 폴더 이름은 `2026년/`이다(`core.paths.source_dir()`가 `2026년`·`2026` 모두 찾음). 읽기 전용으로 다룬다.
 
@@ -29,7 +30,15 @@ hwpx/       hwpx 읽기·생성
   fill.py     문서 → hwpx(render, render_committed → out/{월}/{파일명}), 세부내역 clone/group
   reader.py   hwpx → RequestDoc/ReportDoc(read_document): 서식 판별, 읽기 실패 칸 목록
   receipts.py 영수증 첨부 docx(build_receipts_docx): 이미지/PDF, EXIF 회전, 여백 자르기, 페이지 폭 맞춤
-agents/     Claude API 호출(정보 추출·문장 작성)
+agents/     Claude API 호출(정보 추출·문장 작성만. 계산·검증은 core)
+  llm.py              공통 호출: 모델=settings `모델`, 키=ANTHROPIC_API_KEY(환경변수 → st.secrets → secrets.toml),
+                      출력은 strict 도구 1개 호출로 강제(tool_choice auto — Sonnet 5.5는 강제 불가), fallbacks="default"
+  request_agent.py    자연어 → RequestDoc 초안(missing·defaulted·사업ID 후보)
+  receipt_agent.py    영수증 이미지/PDF/HEIC → 날짜·상호·금액·품목요약(못 읽으면 null + 확인필요)
+  report_agent.py     영수증 + progress_note + suggestion → ReportDoc 초안(금액은 영수증 합, 경과보고 줄은 코드가 렌더링)
+  post_settlement.py  영수증 + 경과보고 → 보고서 초안 → core.build_post_settlement(신청서 역생성)
+  issue_agent.py      이슈 + 사용자 설명 + 첨부 hwpx → 해결 제안(정정/설명/추가 확인 필요), 장부 복사본에 적용해 검증
+scripts/    eval_extraction.py(8월 신앙학교 영수증 추출 ↔ 보고서 금액 비교, 실제 API 호출)
 data/       장부와 설정(커밋 대상)
   ledger.csv         문서 1건 = 1행. 비고 열 없음
   plan.csv           사업계획(원 단위), 사업ID P01~P15, 1월~12월 배분
@@ -84,6 +93,10 @@ out/        생성 결과물 — 커밋 금지
 - 계좌(은행명·계좌번호·예금주)는 칸별로 `문서.계좌_override` > secrets `[계좌_문서별."문서번호"]` > 문서에 적힌 값 > secrets `[계좌]` 순.
   예금주가 문서마다 다를 수 있다(5단계 UI에서 계좌_override로 입력).
 - 금액·누계·번호 계산은 반드시 코드가 한다. LLM은 정보 추출과 문장 작성만 한다.
+  - LLM 출력에는 금액 합계를 받지 않는다: 신청서는 단가·수량만, 보고서는 영수증 번호 묶음만 받고 금액은 코드가 더한다.
+  - 경과보고 한 줄 형식 "M월 D일 항목 : 금액원 / 참가자 : 이름 세례명, …"은 코드가 만든다. 참가자는 교사명단과 매칭(명단에 없으면 경고).
+  - 이슈 에이전트의 변경안은 apply_resolution을 복사본에 돌려 검증한 뒤 보여 주고, 실제 반영은 사용자 확인 후.
+  - LLM에 연락처·계좌 칸은 보내지 않는다.
 
 ## 이슈 규칙
 
@@ -131,5 +144,7 @@ out/        생성 결과물 — 커밋 금지
   - 계정과목은 모든 항목이 같으면 첫 행에만 기재(예시는 칸 병합). 행사유형 칸은 표시하지 않음
   - LibreOffice는 hwpx를 열지 못해 렌더링은 한글에서 확인 필요. 영수증 docx 글꼴 기본 맑은 고딕
   - 샘플: out/샘플/ (커밋 제외)
-- [ ] 4단계 Claude 연동: 영수증·메모에서 정보 추출, 경과보고 문장 작성(agents/)
+- [ ] 4단계 (진행 중) Claude 연동(agents/) — 단위 테스트(mock) 완료, 실제 API 스모크·추출 평가는 API 키 필요
+  - anthropic SDK 2.1.0, 모델 claude-sonnet-5-5(settings), 거절 대비 서버 측 fallbacks="default"(beta server-side-fallback-2026-07-01)
+  - 8월 캠프 영수증 폴더는 없음 → 평가는 신앙학교 영수증 22장. 신앙학교 자체예산 사용내역.xlsx는 암호화돼 정답으로 못 씀
 - [ ] 5단계 Streamlit 대시보드(app/)
