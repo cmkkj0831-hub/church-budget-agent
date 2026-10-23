@@ -9,7 +9,7 @@ from datetime import date
 from functools import lru_cache
 
 from agents.llm import CallInfo, arr, call, i, nullable, obj, s, tool
-from agents.receipt_agent import ReceiptExtraction
+from agents.receipt_agent import ReceiptExtraction, duplicate_warnings
 from core.ledger import BuildResult, Ledger
 from core.models import LedgerRow, LineItem, ReportDoc, RequestDoc
 from core.paths import TEMPLATES_DIR
@@ -36,6 +36,8 @@ SYSTEM = """너는 천주교 개포동성당 초등부 교사회의 예산집행
    - 머리말은 "N월 ○○을 다음과 같이 사용하였습니다." 같은 한 문장.
 3. 건의사항: suggestion이 있으면 공문서 말투로 다듬는다. 없으면 빈 문자열.
 4. 노트와 영수증이 서로 맞지 않는 점이 보이면 불일치_메모에 짧게 적는다.
+5. [대행사 표기]인 영수증은 가맹점명이 결제대행사라 실제 가게가 아니다. progress_note에 그 결제의 실제 상호가
+   보이면 대행사_상호에 {{영수증번호, 상호}}로 적는다(노트에 없으면 적지 않는다). 세부내역 내용에도 실제 상호·용도를 쓴다.
 
 교사 명단(이름 세례명): {roster}
 
@@ -59,6 +61,7 @@ SPEC = tool("submit_report_draft", "집행보고서 초안 제출", obj({
     "행사명_제안": nullable(s()),
     "대상월": nullable(i()),
     "사업ID_후보": arr(obj({"사업ID": s(), "근거": s()})),
+    "대행사_상호": arr(obj({"영수증번호": i(), "상호": s()}), "대행사 표기 영수증의 실제 상호(노트에 있을 때만)"),
 }))
 
 
@@ -155,10 +158,16 @@ def match_participant(name: str, roster: list[str]) -> str | None:
 def compose(out: dict, receipts: list[ReceiptExtraction], roster: list[str], year: int,
             has_note: bool, has_suggestion: bool) -> ReportComposition:
     by_no = {r.순번: r for r in receipts}
-    warnings = []
+    warnings = duplicate_warnings(receipts)
+    for item in out.get("대행사_상호") or []:  # 사용자 설명의 상호를 우선
+        r = by_no.get(item.get("영수증번호"))
+        if r and r.대행사표기 and item.get("상호") and not r.상호_사용자:
+            r.상호_사용자 = item["상호"]
     for r in receipts:
-        if r.확인필요:
-            warnings.append(f"영수증 {r.순번}번({r.상호 or r.파일}) 확인 필요: {r.확인사유}")
+        if r.대행사표기 and not r.상호_사용자:
+            warnings.append(f"영수증 {r.순번}번 가맹점명이 결제대행사({r.가맹점명_원문 or r.상호}) — 실제 상호를 입력해 주세요")
+        if r.확인필요 and not (r.대행사표기 and r.상호_사용자 and r.금액 is not None and r.날짜):
+            warnings.append(f"영수증 {r.순번}번({r.상호_확정 or r.파일}) 확인 필요: {r.확인사유}")
 
     def amount(nos: list[int]) -> int:
         return sum(by_no[n].금액 or 0 for n in nos if n in by_no)
@@ -231,7 +240,8 @@ def _system(ledger: Ledger) -> str:
 
 def _receipt_lines(receipts: list[ReceiptExtraction]) -> str:
     return "\n".join(
-        f"{r.순번}. {r.날짜.isoformat() if r.날짜 else '날짜 미상'} | {r.상호 or '상호 미상'} | "
+        f"{r.순번}. {r.날짜.isoformat() if r.날짜 else '날짜 미상'} | {r.상호_확정 or '상호 미상'}"
+        f"{' [대행사 표기]' if r.대행사표기 and not r.상호_사용자 else ''} | "
         f"{f'{r.금액:,}원' if r.금액 is not None else '금액 미상'} | {r.품목요약}" for r in receipts)
 
 

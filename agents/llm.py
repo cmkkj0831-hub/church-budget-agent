@@ -77,7 +77,8 @@ ALIASES = {
     "사업ID": "business_id", "근거": "reason", "행사일정": "schedule_text",
     # 영수증
     "날짜": "date", "상호": "merchant", "금액": "amount", "품목요약": "item_summary",
-    "확인필요": "needs_review", "확인사유": "review_reason",
+    "확인필요": "needs_review", "확인사유": "review_reason", "승인번호": "approval_number",
+    "결제수단": "payment_method", "가맹점명_원문": "merchant_raw", "대행사_상호": "pg_store_names",
     # 보고서
     "머리말": "intro", "경과보고_줄": "progress_lines", "항목": "item", "영수증번호": "receipt_numbers",
     "참가자": "participants", "노트_언급": "from_note", "노트_날짜": "note_date", "노트_금액": "note_amount",

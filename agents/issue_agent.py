@@ -4,6 +4,7 @@
 """
 import copy
 import json
+import re
 from dataclasses import dataclass, field
 
 from agents.llm import CallInfo, arr, call, i, nullable, obj, s, tool
@@ -26,7 +27,16 @@ SYSTEM = """너는 성당 초등부 교사회 회계 장부의 이슈(오류·�
 - 사용자 설명이 모호하거나("잘 모르겠어" 등) 첨부가 이슈와 무관하면 추가 확인 필요로 답한다.
 - 변경안은 이슈 대상 순번의 행만 바꾼다. 같은 사유로 함께 닫을 열린 이슈가 있으면 함께해결에 넣는다.
 - 설명문: 회계담당에게 보여줄 쉬운 말 3~4문장. 무엇이 문제인지, 왜 중요한지(예산 영향 금액), 무엇을 확인해야 하는지.
+  설명문에는 숫자(금액·날짜·문서번호·개월 수 등)를 직접 쓰지 말고 [자리표시자]의 {이름}만 쓴다.
+  프로그램이 계산값으로 채운다. 목록에 없는 자리표시자는 만들지 않는다.
 - 해결내용: 이슈에 남길 한두 문장(무엇을 근거로 어떻게 처리했는지)."""
+
+EXPLAIN_SYSTEM = """너는 회계 장부 이슈를 회계담당에게 쉬운 말로 설명한다. 3~4문장.
+무엇이 문제인지, 왜 중요한지(예산 영향 금액), 무엇을 확인해야 하는지 순서로 쓴다.
+숫자(금액·날짜·문서번호·개월 수 등)는 직접 쓰지 말고 [자리표시자]의 {이름}만 쓴다. 목록에 없는 자리표시자는 만들지 않는다."""
+
+EXPLAIN_SPEC = tool("submit_explanation", "회계담당용 이슈 설명문 제출", obj({"설명문": s()}))
+MAX_SENTENCES = 4
 
 ROW_FIELDS = {c: nullable(i()) if c in LEDGER_INT_COLUMNS else s() for c in LEDGER_COLUMNS if c != "순번"}
 
@@ -87,6 +97,130 @@ def budget_facts(ledger: Ledger, book: IssueBook, issue: Issue) -> dict:
                 "계획": ledger.plan[r.사업ID].본당예산, "실집행": ledger.business_spent(r.사업ID),
                 "남은한도": ledger.business_limit(r.사업ID)}
     return facts
+
+
+# ---------------------------------------------------------------- 설명문 자리표시자(코드가 숫자를 채움)
+
+def won(n: int) -> str:
+    return f"{n:,}원"
+
+
+def placeholders(ledger: Ledger, book: IssueBook, issue: Issue) -> dict[str, str]:
+    """설명문에 쓸 수 있는 자리표시자 → 계산값(글자). LLM에는 이름과 뜻만 보낸다."""
+    facts = budget_facts(ledger, book, issue)
+    rows = [ledger.row(n) for n in issue.대상순번]
+    values = {
+        "잔여액": won(facts["재계산_잔여"]), "문서잔여액": won(facts["문서기준_잔여"]),
+        "재계산누계": won(facts["재계산_누계"]), "문서누계": won(facts["문서기준_누계"]),
+        "누계차이": won(abs(facts["누계_차이"])),
+        "대상문서": ", ".join(f"{r.문서번호} {r.행사명}" for r in rows),
+        "대상월": ", ".join(dict.fromkeys(r.월 for r in rows)),
+    }
+    amounts = [r.금번신청액 for r in rows if r.신청서 and r.금번신청액] or \
+              [r.합계 for r in rows if r.합계] or [r.본당보조 for r in rows if r.본당보조]
+    if amounts:
+        values["대상금액"] = won(sum(amounts))
+    breaks = facts["대상순번별_누계_단절"]
+    if breaks:
+        values["누계단절"] = won(sum(abs(v) for v in breaks.values()))
+    for pid, b in list(facts.get("사업_한도", {}).items())[:1]:
+        values |= {"사업명": f"{pid} {ledger.plan[pid].사업명}", "사업계획": won(b["계획"]),
+                   "사업실집행": won(b["실집행"]), "남은한도": won(b["남은한도"])}
+    return values
+
+
+PLACEHOLDER_HELP = {
+    "잔여액": "재계산 기준 잔여 예산", "문서잔여액": "문서 기준 잔여 예산", "재계산누계": "재계산 신청누계",
+    "문서누계": "문서 기준 신청누계", "누계차이": "두 누계의 차이", "대상문서": "이슈 대상 문서번호와 행사명",
+    "대상월": "대상 문서의 월", "대상금액": "대상 문서 금액(신청액 또는 합계)", "누계단절": "이 문서에서 생긴 누계 차이",
+    "사업명": "사업ID와 사업명", "사업계획": "사업 계획 본당예산", "사업실집행": "사업 실집행 누계", "남은한도": "사업 남은 한도",
+}
+
+_PH = re.compile(r"\{([^{}]+)\}")
+_SENT = re.compile(r"(?<=[.!?。])\s+")
+
+
+def explanation_problems(text: str, values: dict) -> list[str]:
+    problems = []
+    unknown = [n for n in _PH.findall(text) if n not in values]
+    if unknown:
+        problems.append(f"없는 자리표시자: {', '.join(unknown)}")
+    stripped = _PH.sub("", text)
+    if re.search(r"\d", stripped):
+        problems.append("자리표시자가 아닌 숫자: " + ", ".join(dict.fromkeys(re.findall(r"[\d][\d,.\-×x]*", stripped))))
+    if len(sentences(text)) > MAX_SENTENCES:
+        problems.append(f"{len(sentences(text))}문장 > {MAX_SENTENCES}문장")
+    return problems
+
+
+def sentences(text: str) -> list[str]:
+    return [x for x in _SENT.split(text.strip()) if x.strip()]
+
+
+def finalize_explanation(text: str, values: dict) -> tuple[str, list[str]]:
+    """재요청 뒤에도 남은 문제 처리: 숫자·없는 자리표시자가 든 문장은 빼고, 앞 4문장만 쓴 뒤 숫자를 채운다."""
+    notes = []
+    kept = []
+    for sent in sentences(text):
+        if re.search(r"\d", _PH.sub("", sent)) or any(n not in values for n in _PH.findall(sent)):
+            notes.append(f"설명문에서 검증 안 된 숫자가 든 문장 제외: {sent}")
+            continue
+        kept.append(sent)
+    if len(kept) > MAX_SENTENCES:
+        notes.append(f"설명문 {len(kept)}문장 중 앞 {MAX_SENTENCES}문장만 사용")
+        kept = kept[:MAX_SENTENCES]
+    return fill(" ".join(kept), values), notes
+
+
+# 자리표시자 뒤 조사: (받침 있을 때, 없을 때). 긴 것부터 맞춘다.
+JOSA = (("으로", "로"), ("은", "는"), ("이", "가"), ("을", "를"), ("과", "와"))
+
+
+def _has_final(word: str) -> bool | None:
+    ch = word.rstrip()[-1:] if word.strip() else ""
+    if "가" <= ch <= "힣":
+        return (ord(ch) - 0xAC00) % 28 != 0
+    return None  # 한글이 아니면 판단하지 않음
+
+
+def _final_is_rieul(word: str) -> bool:
+    ch = word.rstrip()[-1:]
+    return "가" <= ch <= "힣" and (ord(ch) - 0xAC00) % 28 == 8
+
+
+def fill(text: str, values: dict) -> str:
+    """자리표시자를 값으로 채우고, 바로 뒤 조사를 값의 받침에 맞춘다. 모르는 자리표시자는 그대로 둔다."""
+    out, pos = [], 0
+    for m in _PH.finditer(text):
+        name = m.group(1)
+        out.append(text[pos:m.start()])
+        pos = m.end()
+        if name not in values:
+            out.append(m.group())
+            continue
+        value = values[name]
+        out.append(value)
+        final = _has_final(value)
+        if final is None:
+            continue
+        for with_final, without in JOSA:
+            for cand in (with_final, without):
+                if text.startswith(cand, pos):
+                    use = with_final if final else without
+                    if with_final == "으로" and _final_is_rieul(value):
+                        use = "로"  # ㄹ 받침은 '로'
+                    out.append(use)
+                    pos += len(cand)
+                    break
+            else:
+                continue
+            break
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _placeholder_text(values: dict) -> str:
+    return "\n".join(f"{{{k}}}: {PLACEHOLDER_HELP.get(k, k)}" for k in values)
 
 
 ATTACH_MAP = {  # 장부 열 ← 첨부 문서 필드
@@ -183,6 +317,7 @@ def assist_issue(issue_id: str, ledger: Ledger, book: IssueBook, user_text: str,
                  처리자: str = "회계관리자", client=None) -> IssueAssist:
     issue = book.get(issue_id)
     rows = related_rows(ledger, issue)
+    values = placeholders(ledger, book, issue)
     related = {x.이슈ID: x for x in [book.get(x) for x in issue.관련이슈] + [
         i for i in book.open_issues() if i is not issue and set(i.대상순번) & set(issue.대상순번)]}
     att_row, att_diffs = (compare_attachment(ledger, issue, attachment) if attachment else (None, []))
@@ -193,6 +328,7 @@ def assist_issue(issue_id: str, ledger: Ledger, book: IssueBook, user_text: str,
         "[같은 행의 다른 이슈]\n" + ("\n".join(f"{i.이슈ID} {i.유형} {i.상태}: {i.설명}" for i in related.values())
                                  or "(없음)"),
         f"[계산된 사실]\n{json.dumps(budget_facts(ledger, book, issue), ensure_ascii=False)}",
+        f"[자리표시자 — 설명문에는 숫자 대신 이것만]\n{_placeholder_text(values)}",
         f"[사용자 설명]\n{user_text or '(없음)'}",
     ]
     if attachment is not None:
@@ -207,9 +343,18 @@ def assist_issue(issue_id: str, ledger: Ledger, book: IssueBook, user_text: str,
     answer = call(ledger, client, SYSTEM, "\n\n".join(parts), SPEC, effort="high")
     out = answer.input
     res, problems = to_resolution(out, issue, book, 처리자)
-    result = IssueAssist(issue, out["해결유형"], res, 추가질문=list(out.get("추가질문") or []),
-                         남은의문=list(out.get("남은의문") or []), 설명문=out.get("설명문") or "",
-                         첨부대조=att_diffs, problems=problems, calls=[answer.info])
+    text, calls = out.get("설명문") or "", [answer.info]
+    issues_found = explanation_problems(text, values)
+    if issues_found:  # 설명문만 1회 재요청
+        retry = call(ledger, client, EXPLAIN_SYSTEM,
+                     f"[이슈]\n{issue.설명}\n\n[자리표시자]\n{_placeholder_text(values)}\n\n"
+                     f"[이전 설명문]\n{text}\n\n[고칠 점]\n" + "\n".join(issues_found), EXPLAIN_SPEC)
+        text = retry.input.get("설명문") or text
+        calls.append(retry.info)
+    text, notes = finalize_explanation(text, values)
+    result = IssueAssist(issue, out["해결유형"], res, 추가질문=[fill(q, values) for q in out.get("추가질문") or []],
+                         남은의문=[fill(q, values) for q in out.get("남은의문") or []], 설명문=text,
+                         첨부대조=att_diffs, problems=problems + notes, calls=calls)
     if res is None:
         if out["해결유형"] != "추가 확인 필요":
             result.해결유형 = "추가 확인 필요"

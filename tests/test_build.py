@@ -65,9 +65,10 @@ def test_build_request_operating_cost(ledger, book, data_dir):
 
     with pytest.raises(BlockedError):
         ledger.commit(res)  # 경고 미확인
+    expected_id = book.next_id()
     rows, issues = commit_with_issues(ledger, book, res, accept_warnings=True)
     assert rows[0].상태 == "진행중" and rows[0].파일명 == "1_11월 교사회 운영비_신청서.hwpx"
-    assert issues[0].이슈ID == "I-026" and issues[0].대상순번 == [54] and issues[0].유형 == "예산 경고"
+    assert issues[0].이슈ID == expected_id and issues[0].대상순번 == [54] and issues[0].유형 == "예산 경고"
     assert 54 in book.ledger_remarks()
 
     ledger.save(); book.save()

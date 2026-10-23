@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 DocKind = Literal["예산신청서", "집행보고서"]
 EventType = Literal["행사·교육·피정", "성지순례·친교·기타"]
-IssueType = Literal["계산 불일치", "누계 누락", "기재 오류", "문서 누락", "번호 중복", "미확인", "예산 경고"]
+IssueType = Literal["계산 불일치", "누계 누락", "기재 오류", "문서 누락", "번호 중복", "미확인", "예산 경고", "증빙 누락"]
 MAX_LINE_ITEMS = 7  # 양식 세부내역 기본 칸 수(신청서·보고서 공통). 넘으면 행 복제 또는 묶기
 RowMode = Literal["clone", "group"]
 FormKind = Literal["구", "신"]  # 구: 1~4월 초 양식(보고서 '반납금액' 칸, 신청서 보좌신부 결재란)

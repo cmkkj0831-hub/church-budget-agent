@@ -287,8 +287,8 @@ def test_post_settlement_missing_business(ledger):
 def _issue_out(kind, changes=(), rows=(), together=(), questions=()):
     return {"해결유형": kind, "변경안": list(changes), "추가행": list(rows), "함께해결": list(together),
             "해결내용": "처리 내용", "남은의문": [], "추가질문": list(questions),
-            "설명문": "부서 운영비 480,000원이 누계에 빠져 있습니다. 실제 지급 여부에 따라 잔여 예산이 달라집니다. "
-                   "지급 여부를 확인해 주세요."}
+            "설명문": "{대상문서}에 대한 집행보고서가 없고 {대상금액}이 누계에 빠져 있습니다. "
+                   "지급 여부에 따라 잔여 예산이 달라지며 재계산 잔여는 {잔여액}입니다. 지급 여부를 확인해 주세요."}
 
 
 def test_issue_withdrawn_is_explanation(ledger, book):
@@ -358,3 +358,91 @@ def test_issue_guards(ledger, book):
     r = issue_agent.assist_issue("I-019", ledger, book, "지급됐어",
                                  client=FakeClient(tool_response("submit_issue_assessment", _issue_out("정정", rows=[bad]))))
     assert r.해결유형 == "추가 확인 필요" and any("검증 실패" in p for p in r.problems)
+
+
+# ---------------------------------------------------------------- 이슈 설명문(자리표시자)
+
+def test_explanation_placeholders_filled(ledger, book):
+    fake = FakeClient(tool_response("submit_issue_assessment", _issue_out("추가 확인 필요", questions=["?"])))
+    r = issue_agent.assist_issue("I-019", ledger, book, "잘 모르겠어", client=fake)
+    assert r.설명문.startswith("(예)2026-037 부서 운영비에 대한 집행보고서가 없고 480,000원이")
+    assert "12,775,990원" in r.설명문 and "{" not in r.설명문 and len(fake.calls) == 1
+    assert "{잔여액}: 재계산 기준 잔여 예산" in fake.prompt()
+
+
+def test_explanation_with_numbers_is_retried(ledger, book):
+    bad = _issue_out("추가 확인 필요", questions=["?"])
+    bad["설명문"] = "부서 운영비 480,000원이 빠졌습니다. 잔여액은 13,253140원입니다."
+    fake = FakeClient(tool_response("submit_issue_assessment", bad),
+                      tool_response("submit_explanation", {"설명문": "{대상금액}이 누계에 빠졌습니다. 확인해 주세요."}))
+    r = issue_agent.assist_issue("I-019", ledger, book, "잘 모르겠어", client=fake)
+    assert len(fake.calls) == 2 and fake.calls[1]["tools"][0]["name"] == "submit_explanation"
+    assert "자리표시자가 아닌 숫자: 480,000, 13,253140" in fake.prompt(1)
+    assert r.설명문 == "480,000원이 누계에 빠졌습니다. 확인해 주세요." and len(r.calls) == 2
+
+
+def test_explanation_still_bad_after_retry(ledger, book):
+    bad = _issue_out("추가 확인 필요", questions=["?"])
+    bad["설명문"] = "{없는값}입니다."
+    still = "{대상문서}가 문제입니다. 7월에 냈습니다. 둘째 문장입니다. 셋째 문장입니다. 넷째 문장입니다. 다섯째 문장입니다."
+    fake = FakeClient(tool_response("submit_issue_assessment", bad),
+                      tool_response("submit_explanation", {"설명문": still}))
+    r = issue_agent.assist_issue("I-019", ledger, book, "x", client=fake)
+    assert "없는 자리표시자: 없는값" in fake.prompt(1)
+    assert r.설명문 == "(예)2026-037 부서 운영비가 문제입니다. 둘째 문장입니다. 셋째 문장입니다. 넷째 문장입니다."
+    assert any("7월에 냈습니다" in p for p in r.problems) and any("앞 4문장" in p for p in r.problems)
+
+
+# ---------------------------------------------------------------- 영수증: 대행사·중복
+
+def test_receipt_pg_and_duplicates(ledger, tmp_path):
+    Image.new("RGB", (100, 100), "white").save(tmp_path / "a.png")
+    base = {"날짜": "2026-08-17", "금액": 141790, "품목요약": "게임 선물", "결제수단": "신용카드",
+            "확인필요": False, "확인사유": ""}
+    fake = FakeClient(
+        tool_response("submit_receipt", base | {"상호": "나이스정보통신(주)", "가맹점명_원문": "나이스정보통신(주)",
+                                               "승인번호": "66496374"}),
+        tool_response("submit_receipt", base | {"상호": "엔에이치엔케이씨피 주식회사", "가맹점명_원문": "엔에이치엔케이씨피 주식회사",
+                                               "승인번호": "6649 6374"}),
+        tool_response("submit_receipt", base | {"상호": "바른치킨 개포점", "가맹점명_원문": "바른치킨 개포점",
+                                               "승인번호": "", "금액": 48400}),
+    )
+    out = receipt_agent.extract_receipts([tmp_path / "a.png"] * 3, ledger, client=fake)
+    assert [r.대행사표기 for r in out] == [True, True, False]
+    assert out[0].확인필요 is False and "대행사 표기(나이스정보통신(주))" in out[0].확인사유
+    assert (out[0].승인번호, out[0].결제수단) == ("66496374", "신용카드")
+    dup = receipt_agent.duplicate_warnings(out)
+    assert dup == ["중복 의심: 영수증 1번(a.png), 2번(a.png) — 승인번호 66496374, 141,790원, 2026-08-17"]
+
+
+def test_report_prefers_store_from_note(ledger):
+    receipts = [ReceiptExtraction(1, "a.pdf", date(2026, 8, 17), "나이스정보통신(주)", 141_790, "게임 선물", False,
+                                  가맹점명_원문="나이스정보통신(주)", 대행사표기=True),
+                ReceiptExtraction(2, "b.pdf", date(2026, 8, 17), "엔에이치엔케이씨피 주식회사", 53_580, "꾸미기", False,
+                                  가맹점명_원문="엔에이치엔케이씨피 주식회사", 대행사표기=True)]
+    out = _report_output(경과보고_줄=[], 세부내역=[{"계정과목": "행사용품비", "내용": "게임 선물", "영수증번호": [1, 2]}],
+                         대행사_상호=[{"영수증번호": 1, "상호": "쿠팡"}])
+    fake = FakeClient(tool_response("submit_report_draft", out))
+    d = report_agent.draft_report(ledger.row(44), receipts, ledger, progress_note="8/17 쿠팡에서 게임 선물",
+                                  client=fake, today=TODAY)
+    assert "[대행사 표기]" in fake.prompt()
+    assert receipts[0].상호_확정 == "쿠팡" and receipts[0].to_receipt().상호 == "쿠팡"
+    assert receipts[1].상호_확정 == "엔에이치엔케이씨피 주식회사"
+    assert any("2번 가맹점명이 결제대행사" in w for w in d.warnings)
+    assert not any("1번 가맹점명이 결제대행사" in w for w in d.warnings)
+
+
+def test_fill_josa():
+    v = {"금액": "23,216,860원", "사업": "P13 부서 운영비", "달": "7월", "문서": "(예)2026-037"}
+    f = issue_agent.fill
+    assert f("{금액}와 {금액}가 다르고 {사업}은 {금액}로 {달}으로", v) == \
+        "23,216,860원과 23,216,860원이 다르고 P13 부서 운영비는 23,216,860원으로 7월로"
+    assert f("{사업}을 보고 {문서}를 확인", v) == "P13 부서 운영비를 보고 (예)2026-037를 확인"  # 한글이 아니면 그대로
+    assert f("{없음}은 그대로", v) == "{없음}은 그대로"
+
+
+def test_questions_placeholders_filled(ledger, book):
+    out = _issue_out("추가 확인 필요", questions=["{대상문서}가 지급됐나요?"])
+    r = issue_agent.assist_issue("I-019", ledger, book, "x",
+                                 client=FakeClient(tool_response("submit_issue_assessment", out)))
+    assert r.추가질문 == ["(예)2026-037 부서 운영비가 지급됐나요?"]
