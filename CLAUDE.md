@@ -55,6 +55,9 @@ core/       장부·이슈·계산 엔진 (순수 Python, UI·LLM 의존성 없�
   storage.py  저장 계층: 세션별 data/ 전체 작업 사본(Workspace, 상대 경로) → commit(바뀐·새 파일). LocalStorage(내용 해시)·
               GitHubStorage(PyGithub, 파일 sha, 한 커밋, 바이너리는 blob), 받은 뒤 원본이 바뀌었으면 ConflictError.
               secrets에 GITHUB_TOKEN이 있으면 GitHub 모드(GITHUB_REPO, DATA_BRANCH 기본 "data")
+  delete.py   문서 삭제(plan_delete → 미리보기, apply_delete): 앱에서 만든 문서(history '(행 추가)')만, 신청서 → 보고서 함께,
+              보고서만 → 신청서 연결·상태를 만들기 전 값으로, 같은 반영의 짝(사후정산) 함께, 지운 문서만 가리키는 열린 이슈는
+              해결-설명됨(문서 삭제), 뒤 신청서 누계 어긋남·빈 문서번호 경고. 원본(이관) 행은 지우지 않는다
   changes.py  반영 단위 이력(record_unit: snapshot 대비 장부 칸·행 추가/삭제·이슈 추가/필드 변경을 같은 이력ID로)과
               되돌리기(undo_unit), units(반영 목록)
   usage.py    usage.csv 기록·집계(월·기능·환경), 예상 비용·연간 예상(단가는 설정)
@@ -149,7 +152,7 @@ out/        생성 결과물 — 커밋 금지
 
 - 장부 값은 근거 없이 바꾸지 않는다. 이상 사항은 이슈로 남긴다.
 - 비고 = 열린 이슈(미해결·확인중)의 설명. 이슈가 해결되면 비고에서 사라진다(`derive_remarks`).
-- 장부 변경은 문서 생성과 이슈 해결로만 하고, 반영마다 전후 값과 사유를 `history.csv`에 남긴다(`core.changes.record_unit`,
+- 장부 변경은 문서 생성·이슈 해결·문서 삭제로만 하고, 반영마다 전후 값과 사유를 `history.csv`에 남긴다(`core.changes.record_unit`,
   앱은 `lib.persist`). 이슈는 삭제하지 않는다(단, 생성을 되돌리면 그 반영이 만든 이슈도 함께 빠진다).
 - 장부 정정은 `core.issues.apply_resolution(ledger, book, 이슈ID, Resolution)`로만 한다.
   - 정정: 대상 행 값 변경(`변경`) 또는 행 추가(`추가행`, 순번·문서번호·파일명 자동, 연결 신청서 역연결). → 해결-정정
@@ -218,6 +221,7 @@ out/        생성 결과물 — 커밋 금지
   - 이슈 해결로 뒤 문서의 누계가 새로 어긋나면 반영 전 경고(ResolutionResult.경고)
   - 테스트: tests/test_app.py(AppTest 시나리오, FakeClient), tests/test_storage.py(로컬·GitHub 대역)
 - [ ] 6단계 (진행 중) Streamlit Community Cloud 배포 — 저장소 cmkkj0831-hub/church-budget-agent(비공개)
+  - 문서 삭제 기능(2026-10-24, 오류 관리 › 문서 삭제 탭, core/delete.py). 커밋 메시지 "장부: (예)2026-053 성탄 행사 삭제(사유)"
   - 버전 고정(requirements.txt, Python 3.13), .streamlit/config.toml, DATA_BRANCH 기본 "data"
   - 저장소 cmkkj0831-hub/church-budget-agent(비공개)에 main·data push 완료(2026-10-23)
   - 보안 기능 전부 삭제(로그인·비밀번호·VIEWER·SETTINGS_KEY·암호화 → 앱 공유 설정으로 대체), 연락처·계좌는 settings.json 평문

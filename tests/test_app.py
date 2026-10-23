@@ -248,6 +248,44 @@ def test_issue_resolve_then_undo(data):
     assert B.history[-1].사유 == f"되돌리기: {unit}"
 
 
+def test_delete_document_then_undo(data):
+    at = go(start(FakeClient(tool_response("submit_request_draft", CHRISTMAS))), "views/request.py")
+    at.text_area(key="req_text").input("12월 20일 성탄 행사")
+    run_ok(at)
+    button(at, "초안 만들기").click()
+    run_ok(at)
+    confirm_and_click(at, "req_confirm", "req_accept", "신청서 생성·장부 반영")
+    assert len(Ledger.load(data).rows) == 54
+
+    go(at, "views/issues.py")
+    at.multiselect(key="del_pick").select(54)
+    run_ok(at)
+    assert "(예)2026-053" in at.dataframe[-1].value.to_string()
+    assert button(at, "문서 삭제").disabled  # 사유·확인 전
+    at.text_input(key="del_reason").input("금액 잘못 입력")
+    checkbox(at, "del_ok").check()
+    run_ok(at)
+    button(at, "문서 삭제").click()
+    run_ok(at)
+    assert any("(예)2026-053을(를) 장부에서 지웠습니다" in s.value for s in at.success)
+    L, B = Ledger.load(data), IssueBook.load(data)
+    assert len(L.rows) == 53 and L.next_doc_number() == 53
+    units = {h.이력ID: h.사유 for h in B.history}
+    unit = next(k for k, v in units.items() if v.startswith("장부: (예)2026-053 성탄 행사 삭제(금액 잘못 입력)"))
+
+    at.selectbox(key="iss_undo_pick").select(unit)
+    checkbox(at, "iss_undo_ok").check()
+    run_ok(at)
+    button(at, "되돌리기").click()
+    run_ok(at)
+    assert Ledger.load(data).row(54).문서번호 == "(예)2026-053"
+
+
+def test_delete_tab_refuses_original_rows(data):
+    at = go(start(), "views/issues.py")
+    assert any("지울 수 있는 문서(앱에서 만든 문서)가 없습니다" in i.value for i in at.info)
+
+
 def test_rescan_registers_selected(data):
     L = Ledger.load(data)
     L.row(53).합계 = None  # 새 이상: 합계란 공란

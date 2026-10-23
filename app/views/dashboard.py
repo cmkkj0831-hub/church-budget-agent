@@ -67,6 +67,7 @@ with tab_acc:
 
     # 장부 표
     st.markdown("**장부**")
+    st.caption("잘못 만든 문서는 ⚠️ 오류 관리 › 문서 삭제에서 지울 수 있습니다(이력에 남고 되돌릴 수 있음).")
     remarks = B.ledger_remarks_detail()
     f1, f2, f3 = st.columns([2, 1, 1])
     q = f1.text_input("검색(행사명·문서번호·사업ID)", key="dash_q")

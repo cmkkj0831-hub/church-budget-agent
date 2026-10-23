@@ -1,5 +1,6 @@
-"""⚠️ 오류 관리(회계담당 전용): 이슈 목록·카드(쉬운 설명·근거) → 자연어/첨부 hwpx 분석 → 처리안 → 반영.
-이력 탭: 해결된 이슈, 반영 단위 이력과 [되돌리기]. 장부 재검사: 새 이슈 후보 중 고른 것만 등록."""
+"""⚠️ 오류 관리: 이슈 목록·카드(쉬운 설명·근거) → 자연어/첨부 hwpx 분석 → 처리안 → 반영.
+이력 탭: 해결된 이슈, 반영 단위 이력과 [되돌리기]. 장부 재검사: 새 이슈 후보 중 고른 것만 등록.
+문서 삭제: 앱에서 만든 신청서·보고서를 잘못 만들었을 때 장부에서 뺀다(core.delete, 이력·되돌리기 가능)."""
 import tempfile
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from core.validate import scan_ledger
 from hwpx.reader import UnknownFormError, read_document
 
 from core.changes import units  # noqa: E402
+from core.delete import apply_delete, deletable, plan_delete  # noqa: E402
 
 L, B = lib.ledger(), lib.book()
 ss = st.session_state
@@ -30,7 +32,7 @@ c[0].metric("미해결", sum(i.상태 == "미해결" for i in B.issues))
 c[1].metric("확인중", sum(i.상태 == "확인중" for i in B.issues))
 c[2].metric("해결", sum(not i.열림 for i in B.issues))
 
-tab_list, tab_history, tab_scan = st.tabs(["이슈", "이력", "장부 재검사"])
+tab_list, tab_history, tab_scan, tab_delete = st.tabs(["이슈", "이력", "장부 재검사", "문서 삭제"])
 
 # ================================================================ 이슈 목록·카드
 with tab_list:
@@ -259,3 +261,65 @@ with tab_scan:
                     ss.iss_scan = None
                     st.success("등록했습니다: " + ", ".join(ids))
                     st.rerun()
+
+# ================================================================ 문서 삭제
+with tab_delete:
+    st.markdown("잘못 만든 **신청서·보고서를 장부에서 지웁니다.** 장부·대시보드·엑셀에서 함께 빠지고, 지운 내용은 이력에 남아 "
+                "**이력 탭에서 되돌릴 수 있습니다.**")
+    st.caption("앱에서 만든 문서만 지울 수 있습니다. 엑셀에서 옮겨 온 원본 문서는 '이슈' 탭에서 설명·취소로 처리하세요. "
+               "신청서를 지우면 연결된 보고서도 함께 지워지고, 보고서만 지우면 신청서는 보고 전 상태로 돌아갑니다.")
+    done = ss.get("del_done")
+    if done:
+        st.success(f"🗑️ {done['names']}을(를) 장부에서 지웠습니다. 내려받아 둔 hwpx 파일도 지우세요.")
+        lib.show_changes(done["before"], done["unit"])
+        if st.button("다른 문서 지우기"):
+            ss.del_done = None
+            st.rerun()
+    elif not writable:
+        st.info(f"{L.year}년은 마감된 연도라 문서를 지울 수 없습니다.")
+    else:
+        rows = deletable(L, B)
+        if not rows:
+            st.info("지울 수 있는 문서(앱에서 만든 문서)가 없습니다.")
+        else:
+            label = {r.순번: f"{r.문서번호} · {r.행사명} · {r.구분} · "
+                             f"{lib.won(r.금번신청액 if r.신청서 else r.합계)} · {r.작성일}" for r in rows}
+            picked = st.multiselect("지울 문서", [r.순번 for r in reversed(rows)], format_func=label.get, key="del_pick")
+            reason = st.text_input("삭제 사유(이력과 이슈에 남습니다)", key="del_reason",
+                                   placeholder="예: 금액을 잘못 넣어 다시 만들 예정")
+            if picked:
+                try:
+                    plan = plan_delete(L, B, picked)
+                except BlockedError as e:
+                    st.error(str(e))
+                    st.stop()
+                st.markdown("**미리보기 — 장부에서 빠질 문서**")
+                st.dataframe(pd.DataFrame([{"문서번호": r.문서번호, "구분": r.구분, "행사명": r.행사명, "작성일": r.작성일,
+                                            "금번신청액": r.금번신청액, "합계": r.합계, "잔액": r.잔액} for r in plan.rows]),
+                             hide_index=True, width="stretch")
+                after = L.copy()
+                after.rows = [r for r in after.rows if r.순번 not in set(plan.seqs)]
+                c = st.columns(3)
+                c[0].metric("다음 문서번호", f"{after.next_doc_number():03d}",
+                            after.next_doc_number() - L.next_doc_number())
+                c[1].metric("신청누계(재계산)", lib.won(after.cumulative_requested()),
+                            f"{after.cumulative_requested() - L.cumulative_requested():+,}원")
+                c[2].metric("장부 행", len(after.rows), len(after.rows) - len(L.rows))
+                for req, values in plan.unlink:
+                    st.info(f"{req.문서번호}는 보고서 연결이 풀리고 상태가 '{values['상태']}'(으)로 돌아갑니다.")
+                if plan.close_issues:
+                    st.info("함께 닫을 이슈(해결-설명됨, 문서 삭제): " + ", ".join(plan.close_issues))
+                for w in plan.warnings:
+                    st.warning(w)
+                ok = st.checkbox("위 문서를 장부에서 지웁니다", key="del_ok")
+                if st.button("문서 삭제", type="primary", disabled=not (ok and reason.strip())):
+                    before = lib.snapshot_view()
+                    names = ", ".join(r.문서번호 for r in plan.rows)
+                    first = plan.rows[0]
+                    apply_delete(L, B, plan, reason, lib.HANDLER, lib.today())
+                    unit = lib.persist(f"장부: {names} {first.행사명} 삭제({reason.strip()})")
+                    if unit is not None:
+                        ss.del_done = {"names": names, "before": before, "unit": unit}
+                        for k in ("del_pick", "del_reason", "del_ok"):
+                            ss.pop(k, None)
+                        st.rerun()
