@@ -220,6 +220,46 @@ def account_override(prefix: str):
                        예금주=ss.get(f"{prefix}_holder", ""))
 
 
+def receipt_span(receipts) -> tuple[date | None, date | None]:
+    days = sorted(r.날짜 for r in receipts if r.날짜)
+    return (days[0], days[-1]) if days else (None, None)
+
+
+def event_fields(prefix: str, start: date | None = None, end: date | None = None) -> dict:
+    """일시(시작·종료일, 시각, 박·일)·장소·참가대상·인원(총·남·여) 입력. 보고서·사후정산 공용(신청서 화면과 같은 칸).
+    처음 그릴 때만 기본값: 날짜 = start/end(영수증 날짜 등), 시각·장소·참가대상 = 설정. 반환값은 DocBase 필드."""
+    from datetime import time as dtime
+    ss = st.session_state
+    s = ledger().settings
+    rules = s.금액문서기준
+    hm = lambda t: dtime(*map(int, t.split(":")))  # noqa: E731
+    for k, v in ((f"{prefix}_시작일", start), (f"{prefix}_종료일", end or start),
+                 (f"{prefix}_시작시각", hm(rules.기본시작시각)), (f"{prefix}_종료시각", hm(rules.기본종료시각)),
+                 (f"{prefix}_장소", s.기본정보.기본장소), (f"{prefix}_참가대상", s.기본정보.참가대상)):
+        ss.setdefault(k, v)
+    st.markdown("**행사 정보** (문서의 일시·장소·참가대상·인원 칸)")
+    a, b, c, d = st.columns(4)
+    a.date_input("시작일", key=f"{prefix}_시작일")
+    b.time_input("시작 시각", key=f"{prefix}_시작시각")
+    c.date_input("종료일", key=f"{prefix}_종료일")
+    d.time_input("종료 시각", key=f"{prefix}_종료시각")
+    a, b, c, d, e = st.columns(5)
+    a.number_input("박", 0, 30, key=f"{prefix}_박")
+    b.number_input("일", 0, 31, key=f"{prefix}_일")
+    c.number_input("인원(총)", 0, key=f"{prefix}_인원_총")
+    d.number_input("남", 0, key=f"{prefix}_인원_남")
+    e.number_input("여", 0, key=f"{prefix}_인원_여")
+    a, b = st.columns(2)
+    a.text_input("장소", key=f"{prefix}_장소")
+    b.text_input("참가대상", key=f"{prefix}_참가대상")
+    g = lambda k: ss.get(f"{prefix}_{k}")  # noqa: E731
+    n = lambda k: int(g(k)) if g(k) else None  # noqa: E731
+    when = lambda day, t: datetime.combine(day, t) if day and t else None  # noqa: E731
+    return {"시작": when(g("시작일"), g("시작시각")), "종료": when(g("종료일") or g("시작일"), g("종료시각")),
+            "박": n("박"), "일": n("일"), "장소": (g("장소") or "").strip(), "참가대상": (g("참가대상") or "").strip(),
+            "인원_총": n("인원_총"), "인원_남": n("인원_남"), "인원_여": n("인원_여")}
+
+
 # ---------------------------------------------------------------- 표시
 
 def won(n) -> str:

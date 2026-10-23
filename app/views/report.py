@@ -123,9 +123,10 @@ with st.container(border=True):
     st.text_area("경과보고", key="rep_body", height=180)
     st.dataframe(pd.DataFrame([{"계정과목": i.계정과목, "내용": i.내용, "금액": i.단가} for i in comp.세부내역]),
                  hide_index=True, width="stretch")
+    event = lib.event_fields("rep", *lib.receipt_span(receipts))
     account = lib.account_override("rep")
 
-draft = ReportDoc(**report_agent.report_fields(request), 작성일=ss.get("rep_date") or lib.today(),
+draft = ReportDoc(**report_agent.report_fields(request), **event, 작성일=ss.get("rep_date") or lib.today(),
                   세부내역=comp.세부내역, 경과보고=ss.rep_body,
                   계좌_override=account)
 build = L.build_report(draft, request, today=lib.today())

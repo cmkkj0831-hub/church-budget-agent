@@ -92,9 +92,11 @@ with st.container(border=True):
     st.text_area("경과보고", key="ps_body", height=150)
     for w in comp.warnings:
         st.warning(f"🔎 {w}")
+    event = lib.event_fields("ps", *lib.receipt_span(receipts))
+    st.caption("행사 정보는 보고서와 함께 만들어지는 신청서에도 똑같이 들어갑니다.")
 
 # ---------------------------------------------------------------- 3. 한도 계산·검증
-draft = ReportDoc(월=int(ss.ps_month), 사업ID=pid, 행사명=event_name, 작성일=lib.today(),
+draft = ReportDoc(**event, 월=int(ss.ps_month), 사업ID=pid, 행사명=event_name, 작성일=lib.today(),
                   세부내역=comp.세부내역, 경과보고=ss.ps_body)
 used = sum(i.단가 * i.수량 for i in draft.세부내역)
 limit = L.business_limit(pid)

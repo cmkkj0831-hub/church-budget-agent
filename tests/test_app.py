@@ -148,7 +148,11 @@ def confirm_and_click(at, confirm_key, accept_key, label):
     return run_ok(at)
 
 
-def test_request_report_post_settlement_flow(data):
+def test_request_report_post_settlement_flow(data, monkeypatch):
+    import hwpx.fill
+    rendered = []
+    real = hwpx.fill.render
+    monkeypatch.setattr(hwpx.fill, "render", lambda doc, *a, **k: rendered.append(doc) or real(doc, *a, **k))
     fake = FakeClient(tool_response("submit_request_draft", CHRISTMAS),
                       receipt("편의점", 300_000), receipt("문구점", 450_000), report_out([1, 2]),
                       receipt("제과점", 200_000, "2026-11-01"), report_out([1], 11, "11월 교리 간식"))
@@ -184,7 +188,13 @@ def test_request_report_post_settlement_flow(data):
     assert (metrics["합계(B) 실사용"], metrics["본당보조"], metrics["잔액(반납)"]) == ("750,000원", "750,000원", "210,000원")
     assert "참가자 : 정연재 레오" in at.text_area(key="rep_body").value
     assert not any("건의" in t.label or "차기" in t.label for t in at.text_area)  # 건의·차기계획 칸 없음
+    assert at.date_input(key="rep_시작일").value == date(2026, 12, 20)  # 영수증 날짜가 기본값
+    at.number_input(key="rep_인원_총").set_value(120)
+    at.text_input(key="rep_장소").input("성당 마당")
+    run_ok(at)
     confirm_and_click(at, "rep_confirm", "rep_accept", "보고서 생성·장부 반영")
+    doc = rendered[-1]
+    assert (doc.인원_총, doc.장소, doc.시작.date(), doc.참가대상) == (120, "성당 마당", date(2026, 12, 20), "초등부 교사회")
     assert any("(집)2026-054" in s.value for s in at.success)
     L = Ledger.load(data)
     assert L.row(54).연결문서번호 == "(집)2026-054" and L.row(55).잔액 == 210_000
@@ -204,7 +214,13 @@ def test_request_report_post_settlement_flow(data):
     assert "행사명: 11월 교리 간식" in prompt and "[연결 신청서]" not in prompt
     assert not any("건의" in t.label for t in at.text_area)
     assert "309,855원" in at.table[0].value.to_string()
+    at.number_input(key="ps_인원_총").set_value(25)
+    at.text_input(key="ps_참가대상").input("초등부 어린이")
+    run_ok(at)
     confirm_and_click(at, "ps_confirm", "ps_accept", "신청서·보고서 생성·장부 반영")
+    req_doc, rep_doc = rendered[-2:]
+    for d in (req_doc, rep_doc):  # 역생성 신청서에도 같은 행사 정보
+        assert (d.인원_총, d.참가대상, d.시작.date()) == (25, "초등부 어린이", date(2026, 11, 1))
     assert any("사후정산 (예)2026-055" in s.value for s in at.success)
     L = Ledger.load(data)
     assert (L.row(56).문서번호, L.row(57).문서번호, L.row(56).금번신청액) == ("(예)2026-055", "(집)2026-056", 200_000)
