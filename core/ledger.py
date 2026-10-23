@@ -12,7 +12,7 @@ from pathlib import Path
 from core.models import (
     LedgerRow, PlanItem, ReportDoc, RequestDoc, Settings,
 )
-from core.paths import DATA_DIR
+from core.paths import DATA_DIR, year_dir
 
 LEDGER_COLUMNS = list(LedgerRow.model_fields)
 LEDGER_INT_COLUMNS = [c for c, f in LedgerRow.model_fields.items() if f.annotation == int | None]
@@ -121,38 +121,77 @@ class CumulativeStep:
 
 # ---------------------------------------------------------------- 장부
 
-class Ledger:
-    def __init__(self, rows: list[LedgerRow], settings: Settings, plan: list[PlanItem],
-                 data_dir: Path | None = None):
-        self.rows = rows
-        self.settings = settings
-        self.plan = {p.사업ID: p for p in plan}
-        self.data_dir = Path(data_dir) if data_dir else None
+def load_settings(data_dir=DATA_DIR) -> Settings:
+    return Settings(**json.loads((Path(data_dir) / "settings.json").read_text(encoding="utf-8")))
 
-    # ---- 입출력
-    @classmethod
-    def load(cls, data_dir=DATA_DIR) -> "Ledger":
-        d = Path(data_dir)
-        rows = [LedgerRow(**{k: (None if k in LEDGER_INT_COLUMNS and v == "" else v)
-                             for k, v in r.items()})
-                for r in read_csv(d / "ledger.csv")]
-        settings = Settings(**json.loads((d / "settings.json").read_text(encoding="utf-8")))
-        plan = []
-        for p in read_csv(d / "plan.csv"):
+
+def save_settings(settings: Settings, data_dir=DATA_DIR) -> None:
+    (Path(data_dir) / "settings.json").write_text(
+        json.dumps(settings.model_dump(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def read_plan(path) -> list[PlanItem]:
+    plan = []
+    for p in read_csv(path):
             plan.append(PlanItem(
                 사업ID=p["사업ID"], 시기=p["시기"], 계속신규=p["계속신규"], 사업명=p["사업명"],
                 세부내역=p["세부내역"], 자체예산=int(p["자체예산"]), 본당예산=int(p["본당예산"]),
                 전년도집행액=int(p["전년도집행액"]) if p["전년도집행액"] else None,
                 월별=[int(p[f"{m}월"]) for m in range(1, 13)],
             ))
-        return cls(rows, settings, plan, d)
+    return plan
+
+
+class Ledger:
+    """회계연도 하나의 장부. 파일은 data/{연도}/, 설정은 data/settings.json(연도별 값은 `연도별`)."""
+
+    def __init__(self, rows: list[LedgerRow], settings: Settings, plan: list[PlanItem],
+                 data_dir: Path | None = None, year: int | None = None):
+        self.rows = rows
+        self.settings = settings
+        self.plan = {p.사업ID: p for p in plan}
+        self.data_dir = Path(data_dir) if data_dir else None
+        self.year = year or settings.현재연도
+
+    # ---- 입출력
+    @classmethod
+    def load(cls, data_dir=DATA_DIR, year: int | None = None) -> "Ledger":
+        d = Path(data_dir)
+        settings = load_settings(d)
+        year = year or settings.현재연도
+        yd = year_dir(year, d)
+        rows = [LedgerRow(**{k: (None if k in LEDGER_INT_COLUMNS and v == "" else v)
+                             for k, v in r.items()})
+                for r in read_csv(yd / "ledger.csv")]
+        return cls(rows, settings, read_plan(yd / "plan.csv"), d, year)
 
     def save(self, data_dir=None) -> None:
+        """장부(data/{연도}/ledger.csv)와 설정(data/settings.json)을 쓴다."""
+        if self.read_only:
+            raise BlockedError(f"{self.year}년은 마감된 연도(읽기 전용)입니다")
         d = Path(data_dir or self.data_dir)
-        write_csv(d / "ledger.csv", LEDGER_COLUMNS, [r.model_dump() for r in self.rows])
-        (d / "settings.json").write_text(
-            json.dumps(self.settings.model_dump(), ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8")
+        yd = year_dir(self.year, d)
+        yd.mkdir(parents=True, exist_ok=True)
+        write_csv(yd / "ledger.csv", LEDGER_COLUMNS, [r.model_dump() for r in self.rows])
+        save_settings(self.settings, d)
+
+    def copy(self) -> "Ledger":
+        """검증용 사본(행·설정 복사)."""
+        return Ledger([r.model_copy() for r in self.rows], self.settings.model_copy(deep=True),
+                      list(self.plan.values()), self.data_dir, self.year)
+
+    # ---- 연도
+    @property
+    def year_info(self):
+        return self.settings.year_info(self.year)
+
+    @property
+    def allocation(self) -> int:
+        return self.year_info.예산배정액
+
+    @property
+    def read_only(self) -> bool:
+        return self.year_info.마감
 
     # ---- 조회
     def row(self, seq: int) -> LedgerRow:
@@ -170,12 +209,12 @@ class Ledger:
     # ---- 문서번호
     def next_doc_number(self) -> int:
         used = [n for r in self.rows if (n := doc_seq(r.문서번호)) is not None]
-        return max([self.settings.금액문서기준.다음문서번호, *(n + 1 for n in used)])
+        return max([self.year_info.다음문서번호, *(n + 1 for n in used)])
 
     def format_doc_number(self, n: int, kind: str) -> str:
         rules = self.settings.금액문서기준
         prefix = rules.신청서번호접두 if kind == "예산신청서" else rules.보고서번호접두
-        return f"{prefix}{n:03d}"
+        return f"{prefix.replace('{연도}', str(self.year))}{n:03d}"
 
     # ---- 누계·한도 (실집행 기준: 신청액 합 − 보고서 반납액 합, 취소 제외)
     def _net(self, rows) -> int:
@@ -190,7 +229,7 @@ class Ledger:
         return self._net(r for r in self.rows if before_seq is None or r.순번 < before_seq)
 
     def remaining(self, before_seq: int | None = None) -> int:
-        return self.settings.금액문서기준.예산배정액 - self.cumulative_requested(before_seq)
+        return self.allocation - self.cumulative_requested(before_seq)
 
     def business_spent(self, pid: str) -> int:
         return self._net(r for r in self.rows if r.사업ID == pid)
@@ -204,18 +243,22 @@ class Ledger:
                 for r in self.rows if r.신청서 and not r.취소]
 
     def cumulative_breaks(self) -> dict[int, int]:
-        """재계산 누계와의 차이가 직전 신청서와 달라지는 문서(오류가 처음 생긴 곳)와 변화량."""
+        """재계산 누계와의 차이가 직전 신청서와 달라지는 문서(오류가 처음 생긴 곳)와 변화량.
+        자기 누계가 재계산과 같은 문서(차이 0)는 앞선 오류를 바로잡은 곳이라 단절로 보지 않는다."""
         out, prev = {}, 0
         for step in self.cumulative_trace():
-            if step.차이 != prev:
+            if step.차이 != prev and step.차이 != 0:
                 out[step.순번] = step.차이 - prev
             prev = step.차이
         return out
 
     def cumulative_summary(self) -> CumulativeSummary:
-        last = [r for r in self.requests() if not r.취소 and r.신청누계액 is not None][-1]
+        written = [r for r in self.requests() if not r.취소 and r.신청누계액 is not None]
+        if not written:  # 새 연도처럼 신청서가 아직 없을 때
+            return CumulativeSummary(0, 0, self.cumulative_requested(), self.allocation, {})
+        last = written[-1]
         return CumulativeSummary(last.순번, last.신청누계액, self.cumulative_requested(),
-                                 self.settings.금액문서기준.예산배정액, self.cumulative_breaks())
+                                 self.allocation, self.cumulative_breaks())
 
     def year_end_projection(self, pid: str, today: date | None = None,
                             extra_request: int = 0, extra_month: int | None = None) -> int:
@@ -257,7 +300,7 @@ class Ledger:
         doc.본당보조 = doc.합계 - doc.자체예산
         doc.수입 = doc.합계
         doc.금번신청액 = doc.본당보조
-        doc.예산배정액 = self.settings.금액문서기준.예산배정액
+        doc.예산배정액 = self.allocation
         doc.신청누계액 = self.cumulative_requested() + doc.금번신청액
         doc.잔여액 = doc.예산배정액 - doc.신청누계액
         return BuildResult([doc], validate.validate_request(doc, self, today=today))
@@ -339,7 +382,8 @@ class Ledger:
         return changes
 
     def commit(self, build: BuildResult, accept_warnings: bool = False) -> list[LedgerRow]:
-        """생성 결과를 장부에 추가하고 다음문서번호를 갱신한다(저장은 save)."""
+        """생성 결과를 장부에 추가한다(저장은 save). 다음 문서번호는 장부에서 계산되므로 따로 저장하지 않는다
+        (되돌리기로 행을 빼면 번호도 다시 쓸 수 있다)."""
         from core import validate
         if build.errors:
             raise BlockedError("오류가 있어 생성할 수 없음", build.errors)
@@ -357,5 +401,4 @@ class Ledger:
             added.append(row)
             if not row.신청서 and row.연결문서번호:
                 self.link(row)
-        self.settings.금액문서기준.다음문서번호 = self.next_doc_number()
         return added

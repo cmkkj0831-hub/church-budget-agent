@@ -13,7 +13,7 @@ def real():
 
 
 def test_ledger_columns():
-    assert list(read_csv(DATA_DIR / "ledger.csv")[0].keys()) == LEDGER_COLUMNS
+    assert list(read_csv(DATA_DIR / "2026" / "ledger.csv")[0].keys()) == LEDGER_COLUMNS
 
 
 def test_sequence(real):
@@ -59,7 +59,7 @@ def test_every_row_has_project(real):
 
 def test_plan_total_matches_allocation(real):
     ledger, _ = real
-    assert sum(p.본당예산 for p in ledger.plan.values()) == ledger.settings.금액문서기준.예산배정액
+    assert sum(p.본당예산 for p in ledger.plan.values()) == ledger.allocation
     for p in ledger.plan.values():
         assert sum(p.월별) == p.본당예산, p.사업ID
 

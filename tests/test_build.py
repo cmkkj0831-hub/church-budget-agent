@@ -34,7 +34,7 @@ def test_post_settlement_over_limit(ledger):
     assert rows[0].연결문서번호 == rows[1].문서번호 and rows[1].연결문서번호 == rows[0].문서번호
     assert [r.파일명 for r in rows] == ["2_10월 교리 준비비_신청서.hwpx", "3_10월 교리 준비비_보고서.hwpx"]
     assert ledger.business_limit("P12") == 0
-    assert ledger.settings.금액문서기준.다음문서번호 == 55
+    assert ledger.next_doc_number() == 55
 
 
 def test_post_settlement_under_limit(ledger):
@@ -74,7 +74,7 @@ def test_build_request_operating_cost(ledger, book, data_dir):
     ledger.save(); book.save()
     again = Ledger.load(data_dir)
     assert again.row(54).신청누계액 == doc.신청누계액
-    assert again.settings.금액문서기준.다음문서번호 == 54
+    assert again.next_doc_number() == 54
 
 
 @pytest.mark.parametrize("used, subsidy, own, balance", [

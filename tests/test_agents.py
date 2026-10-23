@@ -6,7 +6,7 @@ from datetime import date, datetime
 import pytest
 from PIL import Image
 
-from agents import issue_agent, post_settlement, receipt_agent, report_agent, request_agent
+from agents import issue_agent, plan_agent, post_settlement, receipt_agent, report_agent, request_agent
 from agents.llm import FALLBACK_BETA, KEY_PATTERN, MAX_UNION_PARAMS, AgentError, AgentRefusal, call_tool, unalias
 from agents.receipt_agent import ReceiptExtraction
 from core.models import ReportDoc
@@ -17,7 +17,8 @@ from types import SimpleNamespace
 
 from tests.fakes import FakeClient, text_response, tool_response, usage
 
-ALL_SPECS = [request_agent.SPEC, receipt_agent.SPEC, report_agent.SPEC, issue_agent.SPEC]
+ALL_SPECS = [request_agent.SPEC, receipt_agent.SPEC, report_agent.SPEC, issue_agent.SPEC,
+             issue_agent.EXPLAIN_SPEC, plan_agent.SPEC]
 
 
 # ---------------------------------------------------------------- 공통 호출
@@ -446,3 +447,27 @@ def test_questions_placeholders_filled(ledger, book):
     r = issue_agent.assist_issue("I-019", ledger, book, "x",
                                  client=FakeClient(tool_response("submit_issue_assessment", out)))
     assert r.추가질문 == ["(예)2026-037 부서 운영비가 지급됐나요?"]
+
+
+def test_participant_given_name():
+    roster = ["정연재 레오", "정지연 플로라", "양준형 사도요한"]
+    assert report_agent.match_participant("연재", roster) == "정연재 레오"
+    assert report_agent.participant_candidates("지연", roster) == ["정지연 플로라"]
+    assert report_agent.match_participant("재", roster) is None
+
+
+def test_plan_photo_extraction(ledger, tmp_path):
+    Image.new("RGB", (200, 100), "white").save(tmp_path / "plan.jpg")
+    out = {"단위": "천원", "사업목록": [
+        {"사업ID": "P01", "시기": "1월", "계속신규": "계속", "사업명": "졸업행사", "내역": "꽃다발", "자체": 0,
+         "본당": 1300, "전년도": 1177, "월별": [1300] + [0] * 11},
+        {"사업ID": "", "시기": "연중", "계속신규": "계속", "사업명": "운영비", "내역": "", "자체": 0, "본당": 600,
+         "전년도": None, "월별": [50] * 11}],
+        "개요": [{"항목": "사업목표", "내용": "신앙 함양"}], "읽기메모": ["3행 흐림"]}
+    fake = FakeClient(tool_response("submit_plan", out))
+    ext = plan_agent.extract_plan([tmp_path / "plan.jpg"], ledger, client=fake)
+    assert ext.plan[0]["본당예산"] == 1_300_000 and ext.plan[0]["1월"] == 1_300_000 and ext.plan[0]["전년도집행액"] == 1_177_000
+    assert ext.plan[1]["사업ID"] == "P02" and ext.plan[1]["12월"] == 0
+    assert "3행 흐림" in ext.notes and any("월별 칸이 11개" in n for n in ext.notes)
+    from core.plan_io import plan_problems
+    assert any("P02" in p for p in plan_problems(ext.plan))  # 50×11 ≠ 600

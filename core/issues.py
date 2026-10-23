@@ -1,13 +1,13 @@
-"""이슈 관리와 해결. 장부 변경은 apply_resolution으로만 하고 data/history.csv에 이력을 남긴다."""
+"""이슈 관리와 해결. 장부 정정은 apply_resolution으로만 한다. 이력(data/{연도}/history.csv)은
+core.changes.record_unit이 반영 단위로 남긴다(되돌리기 단위)."""
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 
 from core.ledger import (
-    MULTI_SEP, BlockedError, BuildResult, CumulativeSummary, Ledger, read_csv, write_csv,
+    MULTI_SEP, BlockedError, BuildResult, CumulativeSummary, Ledger, load_settings, read_csv, write_csv,
 )
 from core.models import HistoryEntry, Issue, LedgerRow, Resolution
-from core.paths import DATA_DIR
+from core.paths import DATA_DIR, year_dir
 
 ISSUE_COLUMNS = list(Issue.model_fields)
 HISTORY_COLUMNS = list(HistoryEntry.model_fields)
@@ -15,7 +15,7 @@ LIST_FIELDS = ("대상순번", "대상문서번호", "관련이슈", "검증코�
 RESOLVED_STATE = {"정정": "해결-정정", "설명": "해결-설명됨"}
 # 화면·엑셀 표시 색: 문서 오류는 빨강, 예산 경고는 주황(문서 자체의 오류가 아님)
 DOC_ERROR_COLOR = "C00000"
-ISSUE_TYPE_COLORS = {"예산 경고": "C65911"}
+ISSUE_TYPE_COLORS = {"예산 경고": "C65911", "증빙 누락": "7F7F7F", "미확인": "7F7F7F"}  # 그 밖(문서 오류)은 빨강
 CUMULATIVE_TYPES = ("누계 누락", "계산 불일치")
 
 
@@ -44,24 +44,39 @@ def issue_to_csv(i: Issue) -> dict:
     return d
 
 
+def _history_from_csv(r: dict) -> HistoryEntry:
+    d = dict(r)
+    d["순번"] = int(d["순번"]) if d.get("순번") else None
+    d.setdefault("대상", "장부")
+    d["대상"] = d["대상"] or "장부"
+    return HistoryEntry(**d)
+
+
 class IssueBook:
+    """회계연도 하나의 이슈·이력(data/{연도}/issues.csv, history.csv)."""
+
     def __init__(self, issues: list[Issue], history: list[HistoryEntry],
-                 data_dir: Path | None = None):
+                 data_dir: Path | None = None, year: int | None = None):
         self.issues = issues
         self.history = history
         self.data_dir = Path(data_dir) if data_dir else None
+        self.year = year
 
     @classmethod
-    def load(cls, data_dir=DATA_DIR) -> "IssueBook":
+    def load(cls, data_dir=DATA_DIR, year: int | None = None) -> "IssueBook":
         d = Path(data_dir)
-        issues = [issue_from_csv(r) for r in read_csv(d / "issues.csv")]
-        history = [HistoryEntry(**r) for r in read_csv(d / "history.csv")]
-        return cls(issues, history, d)
+        year = year or load_settings(d).현재연도
+        yd = year_dir(year, d)
+        issues = [issue_from_csv(r) for r in read_csv(yd / "issues.csv")]
+        history = [_history_from_csv(r) for r in read_csv(yd / "history.csv")]
+        return cls(issues, history, d, year)
 
     def save(self, data_dir=None) -> None:
-        d = Path(data_dir or self.data_dir)
-        write_csv(d / "issues.csv", ISSUE_COLUMNS, [issue_to_csv(i) for i in self.issues])
-        write_csv(d / "history.csv", HISTORY_COLUMNS, [h.model_dump() for h in self.history])
+        yd = year_dir(self.year, Path(data_dir or self.data_dir))
+        yd.mkdir(parents=True, exist_ok=True)
+        write_csv(yd / "issues.csv", ISSUE_COLUMNS, [issue_to_csv(i) for i in self.issues])
+        write_csv(yd / "history.csv", HISTORY_COLUMNS,
+                  [{**h.model_dump(), "순번": "" if h.순번 is None else h.순번} for h in self.history])
 
     def get(self, issue_id: str) -> Issue:
         return next(i for i in self.issues if i.이슈ID == issue_id)
@@ -85,12 +100,9 @@ class IssueBook:
         n = max((int(i.이슈ID.split("-")[1]) for i in self.issues), default=0)
         return f"I-{n + 1:03d}"
 
-    def _log(self, issue_id, seq, col, before, after, reason, handler, when):
-        self.history.append(HistoryEntry(
-            이력ID=f"H-{len(self.history) + 1:04d}", 일시=when, 이슈ID=issue_id, 순번=seq, 열=col,
-            변경전="" if before is None else str(before), 변경후="" if after is None else str(after),
-            사유=reason, 처리자=handler,
-        ))
+    def next_history_id(self) -> str:
+        n = max((int(h.이력ID.split("-")[1]) for h in self.history if h.이력ID.startswith("H-")), default=0)
+        return f"H-{n + 1:04d}"
 
 
 def create_issue(book: IssueBook, finding, rows: list[LedgerRow] = (), 근거: str = "") -> Issue:
@@ -138,6 +150,54 @@ def cumulative_reconciliation(ledger: Ledger, book: IssueBook) -> CumulativeReco
     return rec
 
 
+def _row_discrepancy(ledger: Ledger, r: LedgerRow, written_vs_calc: dict[int, int]) -> int:
+    """행 안의 금액 어긋남 중 가장 큰 것."""
+    from core.ledger import report_amounts
+    gaps = []
+    if r.신청서:
+        if r.합계 is not None:
+            gaps.append(abs(r.합계 - (r.본당보조 or 0) - (r.자체예산 or 0)))
+        if None not in (r.예산배정액, r.신청누계액, r.잔여액):
+            gaps.append(abs(r.잔여액 - (r.예산배정액 - r.신청누계액)))
+        gaps.append(abs(written_vs_calc.get(r.순번, 0)))
+    elif r.합계 is not None:
+        gaps.append(abs((r.본당보조 or 0) + (r.자체예산 or 0) - r.합계))
+        req = ledger.find_ref(r.연결문서번호)
+        if req is not None and r.잔액 is not None and r.양식 == "신":
+            gaps.append(abs(r.잔액 - report_amounts(req.금번신청액 or 0, r.합계)[4]))
+    return max(gaps, default=0)
+
+
+def budget_impact(ledger: Ledger, book: IssueBook, issue: Issue, breaks: dict | None = None,
+                  trace: dict | None = None) -> int:
+    """이슈의 예산 영향 금액(원, 화면 표시용).
+    누계 누락·문서 누락: 그 문서의 누계 단절 / 계산 불일치: 설명의 'N원 차이'·'A원 ≠ B원', 없으면 행 안의 가장 큰 어긋남 /
+    예산 경고: 계획 초과액 / 증빙 누락: 설명의 'N원 부족' / 그 밖(기재 오류·번호 중복·미확인): 0."""
+    import re
+    breaks = ledger.cumulative_breaks() if breaks is None else breaks
+    trace = {t.순번: t.차이 for t in ledger.cumulative_trace()} if trace is None else trace
+    rows = [r for r in ledger.rows if r.순번 in issue.대상순번]
+    if issue.유형 in ("누계 누락", "문서 누락"):
+        hit = [abs(breaks[s]) for s in issue.대상순번 if s in breaks]
+        return sum(hit) if hit else sum(r.금번신청액 or 0 for r in rows if r.신청서)
+    if issue.유형 == "계산 불일치":  # 설명에 적힌 차이가 있으면 그것(같은 행의 다른 이슈 금액과 섞이지 않게)
+        m = re.search(r"([\d,]+)원\s*차이", issue.설명)
+        if m:
+            return int(m.group(1).replace(",", ""))
+        m = re.search(r"([\d,]+)원\s*≠[^\d]*([\d,]+)원", issue.설명)
+        if m:
+            a, b = (int(x.replace(",", "")) for x in m.groups())
+            return abs(a - b)
+        return max((_row_discrepancy(ledger, r, trace) for r in rows), default=0)
+    if issue.유형 == "예산 경고":
+        pids = {r.사업ID for r in rows if r.사업ID in ledger.plan}
+        return sum(max(0, ledger.business_spent(p) - ledger.plan[p].본당예산) for p in pids)
+    if issue.유형 == "증빙 누락":
+        m = re.search(r"([\d,]+)원\s*부족", issue.설명)
+        return int(m.group(1).replace(",", "")) if m else sum(r.합계 or 0 for r in rows)
+    return 0
+
+
 @dataclass
 class ResolutionResult:
     diff: list[dict] = field(default_factory=list)   # {순번, 열, 변경전, 변경후}
@@ -165,8 +225,7 @@ def apply_resolution(ledger: Ledger, book: IssueBook, issue: Issue | str,
     if res.방식 == "정정" and not (res.변경 or res.추가행):
         raise BlockedError("정정 해결에는 장부 변경이나 행 추가가 필요함")
 
-    work = Ledger([r.model_copy() for r in ledger.rows], ledger.settings.model_copy(deep=True),
-                  list(ledger.plan.values()), ledger.data_dir)
+    work = ledger.copy()
     before_total = ledger.cumulative_requested()
     diff = []
     targets = set(issue.대상순번).union(*(t.대상순번 for t in together))
@@ -197,7 +256,6 @@ def apply_resolution(ledger: Ledger, book: IssueBook, issue: Issue | str,
         if not row.신청서 and row.연결문서번호:
             for req, col, old, val in work.link(row):
                 diff.append({"순번": req.순번, "열": col, "변경전": old, "변경후": val})
-    work.settings.금액문서기준.다음문서번호 = work.next_doc_number()
 
     # 검증: 연간 잔여가 음수가 되면 거부, 바뀐 행의 계산 오류는 거부
     if work.remaining() < 0:
@@ -207,14 +265,13 @@ def apply_resolution(ledger: Ledger, book: IssueBook, issue: Issue | str,
     if blocking:
         raise BlockedError("추가 행에 계산 오류", blocking)
     remaining_issues = [i for i in book.issues if i.이슈ID not in {issue.이슈ID, *res.함께해결}]
+    # 바뀐 행의 남은 이상 + 이번 반영으로 새로 생기는 누계 단절(예: 취소한 신청서 뒤에 이미 나간 문서의 누계)
+    new_breaks = set(work.cumulative_breaks()) - set(ledger.cumulative_breaks())
     leftover = [f for f in validate.scan_ledger(work, remaining_issues, include_registered=False)
-                if touched & set(f.순번)]
+                if touched & set(f.순번) or (f.코드 == "cumulative" and set(f.순번) & new_breaks)]
 
     # 실제 반영
     ledger.rows, ledger.settings = work.rows, work.settings
-    when = datetime.now().isoformat(timespec="seconds")
-    for d in diff:
-        book._log(issue.이슈ID, d["순번"], d["열"], d["변경전"], d["변경후"], res.내용, res.처리자, when)
     state = RESOLVED_STATE[res.방식]
     for i in [issue, *together]:
         i.상태 = state

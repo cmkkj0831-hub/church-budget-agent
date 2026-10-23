@@ -94,6 +94,10 @@ ALIASES = {
     "자체예산": "own_funds", "본당보조": "parish_subsidy", "합계": "total", "잔액": "balance",
     "문서번호": "doc_number", "파일명": "file_name", "연결문서번호": "linked_doc_number", "상태": "status",
     "양식": "form",
+    # 사업계획서
+    "단위": "unit", "사업목록": "projects", "시기": "period", "계속신규": "continuity", "사업명": "project_name",
+    "내역": "details", "자체": "own", "본당": "parish", "전년도": "prev_year", "월별": "monthly", "개요": "overview",
+    "읽기메모": "reading_notes",
 }
 REVERSE = {v: k for k, v in ALIASES.items()}
 assert len(REVERSE) == len(ALIASES), "영문 별칭 중복"
@@ -248,6 +252,15 @@ def call_tool(client, model: str, system: str, content: list | str, spec: dict,
     raise AgentError(f"`{spec['name']}` 도구 호출을 받지 못함")
 
 
+_usage_hook = None
+
+
+def set_usage_hook(fn) -> None:
+    """모든 호출의 CallInfo를 받을 함수(앱이 data/{연도}/usage.csv에 기록). None이면 끔."""
+    global _usage_hook
+    _usage_hook = fn
+
+
 def model_of(ledger) -> str:
     return getattr(ledger.settings, "모델", None) or DEFAULT_MODEL
 
@@ -258,5 +271,8 @@ def fallbacks_of(ledger) -> str:
 
 def call(ledger, client, system, content, spec, effort: str = "medium") -> ToolCall:
     """settings의 모델·fallbacks로 call_tool."""
-    return call_tool(client or make_client(), model_of(ledger), system, content, spec, effort=effort,
-                     fallbacks=fallbacks_of(ledger))
+    result = call_tool(client or make_client(), model_of(ledger), system, content, spec, effort=effort,
+                       fallbacks=fallbacks_of(ledger))
+    if _usage_hook is not None:
+        _usage_hook(result.info)
+    return result

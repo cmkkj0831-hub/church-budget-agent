@@ -305,13 +305,31 @@ def to_resolution(out: dict, issue: Issue, book: IssueBook, 처리자: str) -> t
 
 def dry_run(ledger: Ledger, book: IssueBook, issue: Issue, res: Resolution) -> ResolutionResult:
     """장부·이슈 복사본에 적용해 본다(원본은 그대로)."""
-    l2 = Ledger([r.model_copy() for r in ledger.rows], ledger.settings.model_copy(deep=True),
-                list(ledger.plan.values()), ledger.data_dir)
-    b2 = IssueBook(copy.deepcopy(book.issues), list(book.history), book.data_dir)
+    l2 = ledger.copy()
+    b2 = IssueBook(copy.deepcopy(book.issues), list(book.history), book.data_dir, book.year)
     return apply_resolution(l2, b2, issue.이슈ID, res)
 
 
 # ---------------------------------------------------------------- 호출
+
+def explain_issue(issue_id: str, ledger: Ledger, book: IssueBook, client=None) -> tuple[str, list, list[str]]:
+    """회계담당용 쉬운 설명문만 만든다(자리표시자 → 계산값). (설명문, 호출 기록, 처리 메모)."""
+    issue = book.get(issue_id)
+    values = placeholders(ledger, book, issue)
+    rows = "\n".join(_row_text(r) for r in related_rows(ledger, issue))
+    content = (f"[이슈]\n{issue.유형}: {issue.설명}\n근거: {issue.근거}\n\n[관련 장부 행]\n{rows}\n\n"
+               f"[자리표시자]\n{_placeholder_text(values)}")
+    first = call(ledger, client, EXPLAIN_SYSTEM, content, EXPLAIN_SPEC)
+    text, calls = first.input.get("설명문") or "", [first.info]
+    problems = explanation_problems(text, values)
+    if problems:
+        retry = call(ledger, client, EXPLAIN_SYSTEM, content + f"\n\n[이전 설명문]\n{text}\n\n[고칠 점]\n"
+                     + "\n".join(problems), EXPLAIN_SPEC)
+        text = retry.input.get("설명문") or text
+        calls.append(retry.info)
+    text, notes = finalize_explanation(text, values)
+    return text, calls, notes
+
 
 def assist_issue(issue_id: str, ledger: Ledger, book: IssueBook, user_text: str, attachment=None,
                  처리자: str = "회계관리자", client=None) -> IssueAssist:

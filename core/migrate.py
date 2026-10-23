@@ -17,8 +17,7 @@ from core.issues import HISTORY_COLUMNS, ISSUE_COLUMNS
 from core.ledger import LEDGER_COLUMNS, MULTI_SEP, parse_date, write_csv
 from hwpx.text import extract_text
 from core.paths import (
-    DATA_DIR, HISTORY_CSV, ISSUES_CSV, LEDGER_CSV, PLAN_CSV, PLAN_INFO_CSV,
-    SETTINGS_JSON, find_child, nfc, source_dir,
+    SETTINGS_JSON, find_child, nfc, source_dir, year_dir,
 )
 
 LEDGER_XLSX = "2026_초등부교사회_회계내역.xlsx"
@@ -215,32 +214,8 @@ def build_ledger(src) -> tuple[list[dict], list[dict]]:
 
 
 def build_plan(src) -> tuple[list[dict], list[dict]]:
-    wb = openpyxl.load_workbook(find_child(src, PLAN_XLSX), data_only=False)
-    ws = wb["사업계획"]
-    months = [f"{m}월" for m in range(1, 13)]
-    plan = []
-    header_row = None
-    for row in ws.iter_rows(values_only=True):
-        if row[0] == "사업ID":
-            header_row = [nfc(h) if h else "" for h in row]
-            continue
-        if header_row is None or not (isinstance(row[0], str) and re.fullmatch(r"P\d{2}", row[0])):
-            continue
-        r = dict(zip(header_row, row))
-        k = lambda v: int(v or 0) * 1000  # 천원 → 원
-        p = {
-            "사업ID": r["사업ID"], "시기": r["시기"], "계속신규": r["계속/신규"],
-            "사업명": r["사업명"], "세부내역": r["세부내역"],
-            "자체예산": k(r["자체"]), "본당예산": k(r["본당"]),
-            "전년도집행액": "" if r["전년도 본당 집행액"] is None else k(r["전년도 본당 집행액"]),
-        }
-        for m in months:
-            p[m] = k(r[m])
-        plan.append(p)
-
-    info = [{"항목": nfc(a), "내용": nfc(b)}
-            for a, b in wb["개요·비고"].iter_rows(min_row=2, values_only=True) if a]
-    return plan, info
+    from core.plan_io import parse_plan_xlsx
+    return parse_plan_xlsx(find_child(src, PLAN_XLSX))
 
 
 def build_issues(ledger: list[dict]) -> list[dict]:
@@ -274,13 +249,11 @@ def build_settings() -> dict:
             "기안단체장": "정지연 플로라",
         },
         "금액문서기준": {
-            "예산배정액": 36470000,
             "운영비단가": 60000,
             "교사수": 9,
             "결재란": ["분과장", "재정분과장", "사목회장", "담당사제", "사무장"],
-            "신청서번호접두": "(예)2026-",
-            "보고서번호접두": "(집)2026-",
-            "다음문서번호": 53,
+            "신청서번호접두": "(예){연도}-",
+            "보고서번호접두": "(집){연도}-",
             "기본시작시각": "10:00",
             "기본종료시각": "18:00",
         },
@@ -290,6 +263,7 @@ def build_settings() -> dict:
             "양희강 스테파노", "정연재 레오", "정지연 플로라", "정하영 실비아", "조민기 사도요한",
         ],
         "모델": "claude-sonnet-5-5",
+        "연도별": {"2026": {"예산배정액": 36470000, "다음문서번호": 53, "마감": False}},
     }
 
 
@@ -301,6 +275,9 @@ def main(argv=None) -> int:
     if args.fill_form:
         return fill_form()
 
+    yd = year_dir(2026)
+    LEDGER_CSV, PLAN_CSV, PLAN_INFO_CSV = yd / "ledger.csv", yd / "plan.csv", yd / "plan_info.csv"
+    ISSUES_CSV, HISTORY_CSV = yd / "issues.csv", yd / "history.csv"
     targets = [LEDGER_CSV, PLAN_CSV, PLAN_INFO_CSV, ISSUES_CSV, HISTORY_CSV, SETTINGS_JSON]
     existing = [p.name for p in targets if p.exists()]
     if existing and not args.force:
@@ -312,7 +289,7 @@ def main(argv=None) -> int:
     plan, info = build_plan(src)
     issues = build_issues(ledger)
 
-    DATA_DIR.mkdir(exist_ok=True)
+    yd.mkdir(parents=True, exist_ok=True)
     write_csv(LEDGER_CSV, LEDGER_COLUMNS, ledger)
     write_csv(PLAN_CSV, list(plan[0].keys()), plan)
     write_csv(PLAN_INFO_CSV, ["항목", "내용"], info)

@@ -87,11 +87,24 @@ def _cumulative_sheet(wb, ledger, book):
     return ws
 
 
+def _save(wb, path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+    return path
+
+
 def export_xlsx(ledger: Ledger, book: IssueBook, path) -> Path:
-    remarks = book.ledger_remarks_detail()
+    """회계내역: 신청·집행 내역(비고=열린 이슈) + 이슈 + 누계 시트."""
     wb = Workbook()
-    ws = wb.active
-    ws.title = f"{ledger.settings.기본정보.회계연도} 신청·집행 내역"
+    write_ledger_sheets(wb, ledger, book, wb.active)
+    return _save(wb, path)
+
+
+def write_ledger_sheets(wb, ledger: Ledger, book: IssueBook, ws=None) -> None:
+    remarks = book.ledger_remarks_detail()
+    ws = ws or wb.create_sheet()
+    ws.title = f"{ledger.year} 신청·집행 내역"
     _header(ws, [h for h, _, _ in LEDGER_SHEET], [w for _, _, w in LEDGER_SHEET])
 
     for i, r in enumerate(ledger.rows, 2):
@@ -130,13 +143,72 @@ def export_xlsx(ledger: Ledger, book: IssueBook, path) -> Path:
     wi.freeze_panes = "B2"
     _cumulative_sheet(wb, ledger, book)
 
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(path)
-    return path
+
+def export_plan_xlsx(ledger: Ledger, plan_info: list[dict], path, today=None) -> Path:
+    """사업계획서 + 집행 현황(사업별 실집행·집행률·남은 한도·연말 예상) + 개요·비고."""
+    wb = Workbook()
+    write_plan_sheets(wb, ledger, plan_info, today, wb.active)
+    return _save(wb, path)
 
 
-if __name__ == "__main__":
+def write_plan_sheets(wb, ledger: Ledger, plan_info: list[dict], today=None, ws=None) -> None:
+    ws = ws or wb.create_sheet()
+    ws.title = "사업계획"
+    months = [f"{m}월" for m in range(1, 13)]
+    headers = ["사업ID", "시기", "계속신규", "사업명", "세부내역", "자체예산", "본당예산", "전년도집행액",
+               "실집행", "집행률", "남은한도", "연말예상", *months]
+    _header(ws, headers, [7, 6, 7, 22, 40, 11, 11, 11, 11, 8, 11, 11, *[9] * 12])
+    for r, p in enumerate(ledger.plan.values(), 2):
+        spent = ledger.business_spent(p.사업ID)
+        rate = spent / p.본당예산 if p.본당예산 else 0
+        row = [p.사업ID, p.시기, p.계속신규, p.사업명, p.세부내역, p.자체예산, p.본당예산, p.전년도집행액,
+               spent, rate, ledger.business_limit(p.사업ID), ledger.year_end_projection(p.사업ID, today), *p.월별]
+        for c, v in enumerate(row, 1):
+            cell = ws.cell(r, c, v)
+            cell.border = BORDER
+            cell.font = Font(name=FONT, size=10)
+            cell.number_format = "0.0%" if headers[c - 1] == "집행률" else MONEY
+    total = len(ledger.plan) + 2
+    ws.cell(total, 4, "합계").font = Font(name=FONT, bold=True)
+    for c in (6, 7, 9, 11, 12, *range(13, 25)):
+        col = get_column_letter(c)
+        cell = ws.cell(total, c, f"=SUM({col}2:{col}{total - 1})")
+        cell.number_format = MONEY
+        cell.font = Font(name=FONT, bold=True)
+    ws.freeze_panes = "E2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{total - 1}"
+
+    wi = wb.create_sheet("개요·비고")
+    _header(wi, ["항목", "내용"], [16, 100])
+    for r, item in enumerate(plan_info, 2):
+        wi.cell(r, 1, item["항목"]).font = Font(name=FONT, size=10)
+        cell = wi.cell(r, 2, item["내용"])
+        cell.font = Font(name=FONT, size=10)
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+
+def write_usage_sheet(wb, usage_rows: list[dict], pricing) -> None:
+    from core.usage import summarize
+    ws = wb.create_sheet("사용량")
+    rows = summarize(usage_rows, pricing)
+    headers = ["월", "기능", "환경", "호출", "입력토큰", "출력토큰", "소요초", "예상비용_원"]
+    _header(ws, headers, [9, 16, 7, 7, 12, 12, 9, 12])
+    for r, g in enumerate(rows, 2):
+        for c, h in enumerate(headers, 1):
+            ws.cell(r, c, g[h]).font = Font(name=FONT, size=10)
+
+
+def export_annual_xlsx(ledger: Ledger, book: IssueBook, plan_info: list[dict], usage_rows: list[dict],
+                       path, today=None) -> Path:
+    """연간 결산: 장부·이슈·누계 + 사업별 집행 + 개요·비고 + 사용량."""
+    wb = Workbook()
+    write_ledger_sheets(wb, ledger, book, wb.active)
+    write_plan_sheets(wb, ledger, plan_info, today)
+    write_usage_sheet(wb, usage_rows, ledger.settings.사용량단가)
+    return _save(wb, path)
+
+
+if __name__ == "__main__":  # noqa: E305
     from core.paths import OUT_DIR
     out = export_xlsx(Ledger.load(), IssueBook.load(), OUT_DIR / "2026_초등부교사회_회계내역.xlsx")
     print(out)

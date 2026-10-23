@@ -47,7 +47,7 @@ def check_line_items(doc, row_mode: str = "clone") -> list[Finding]:
 def check_doc_context(doc, ledger, today: date | None = None) -> list[Finding]:
     """월·연도·사업ID·문서번호 등 문서 밖 기준과의 일치."""
     out = []
-    year = ledger.settings.기본정보.회계연도
+    year = ledger.year
     no = [doc.문서번호] if doc.문서번호 else []
     if doc.사업ID not in ledger.plan:
         out.append(_err("unknown_business", "기재 오류", f"사업ID '{doc.사업ID}' 없음", 문서번호=no))
@@ -189,7 +189,6 @@ def _report_amounts(form, applied, subsidy, own, total, balance, budget_a, no, s
 # ---------------------------------------------------------------- 장부 전체 검사
 
 def _row_findings(r: LedgerRow, ledger) -> list[Finding]:
-    s = ledger.settings
     seq, no = [r.순번], [r.문서번호]
     out = []
     if "미기재" in r.문서번호 or not r.문서번호:
@@ -197,7 +196,7 @@ def _row_findings(r: LedgerRow, ledger) -> list[Finding]:
     d = parse_date(r.작성일)
     if d is None:
         out.append(_warn("missing_date", "기재 오류", "작성일 미기재", 순번=seq, 문서번호=no))
-    elif d.year != s.기본정보.회계연도:
+    elif d.year != ledger.year:
         out.append(_warn("date_year", "기재 오류", f"작성일 {d.year}년으로 기재", 순번=seq, 문서번호=no))
     named = months_in_name(r.행사명)
     if named and r.월번호 not in named:
@@ -213,7 +212,7 @@ def _row_findings(r: LedgerRow, ledger) -> list[Finding]:
         if r.금번신청액 != r.본당보조:
             out.append(_err("request_vs_subsidy", "계산 불일치",
                             f"금번신청액 {won(r.금번신청액)} ≠ 본당보조 {won(r.본당보조)}", 순번=seq, 문서번호=no))
-        if r.예산배정액 != s.금액문서기준.예산배정액:
+        if r.예산배정액 != ledger.allocation:
             out.append(_err("allocation", "기재 오류", f"예산배정액 {won(r.예산배정액)}", 순번=seq, 문서번호=no))
         if None not in (r.예산배정액, r.신청누계액, r.잔여액) and r.예산배정액 - r.신청누계액 != r.잔여액:
             out.append(_err("remaining", "계산 불일치",
@@ -241,11 +240,12 @@ def _duplicate_numbers(ledger) -> list[Finding]:
 def _cumulative_breaks(ledger) -> list[Finding]:
     """누계 연속성: 재계산 누계와의 차이가 직전 신청서와 달라지는 곳(오류가 처음 생긴 문서)."""
     out = []
+    diffs = {t.순번: t.차이 for t in ledger.cumulative_trace()}
     for seq, delta in ledger.cumulative_breaks().items():
         r = ledger.row(seq)
         out.append(_err("cumulative", "누계 누락" if delta < 0 else "계산 불일치",
-                        f"신청누계액 {won(r.신청누계액)}, 이 문서에서 재계산과 차이 {delta:+,}원",
-                        순번=[r.순번], 문서번호=[r.문서번호]))
+                        f"신청누계액 {won(r.신청누계액)}, 재계산과 차이 {diffs[seq]:+,}원"
+                        f"(이 문서에서 새로 생긴 차이 {delta:+,}원)", 순번=[r.순번], 문서번호=[r.문서번호]))
     return out
 
 
@@ -279,9 +279,9 @@ def _business_overruns(ledger, today: date) -> list[Finding]:
                              f"{pid} {plan.사업명} 연말 예상 {won(projected)} > 계획 {won(plan.본당예산)}",
                              순번=[last.순번], 문서번호=[last.문서번호]))
     total = ledger.cumulative_requested()
-    if total > ledger.settings.금액문서기준.예산배정액:
+    if total > ledger.allocation:
         out.append(_err("annual_budget", "계산 불일치",
-                        f"연간 신청누계 {won(total)} > 예산배정액 {won(ledger.settings.금액문서기준.예산배정액)}"))
+                        f"연간 신청누계 {won(total)} > 예산배정액 {won(ledger.allocation)}"))
     return out
 
 

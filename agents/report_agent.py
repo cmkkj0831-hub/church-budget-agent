@@ -146,7 +146,11 @@ def participant_candidates(name: str, roster: list[str]) -> list[str]:
                and (len(parts) == 1 or parts[1:] == r.split()[1:])]
     if by_name:
         return by_name
-    return [r for r in roster if " ".join(r.split()[1:]) == name]
+    by_saint = [r for r in roster if " ".join(r.split()[1:]) == name]
+    if by_saint:
+        return by_saint
+    # 성 없이 이름만('연재' → '정연재 레오'): 세 글자 이상 이름의 뒤 글자와 같을 때
+    return [r for r in roster if len(parts) == 1 and len(r.split()[0]) >= 3 and r.split()[0][1:] == parts[0]]
 
 
 def match_participant(name: str, roster: list[str]) -> str | None:
@@ -261,7 +265,7 @@ def ask(ledger: Ledger, request, receipts, progress_note, suggestion, client, ex
 def compose_report(ledger: Ledger, request, receipts: list[ReceiptExtraction], progress_note: str | None = None,
                    suggestion: str | None = None, client=None, extra: str = "") -> ReportComposition:
     result = ask(ledger, request, receipts, progress_note, suggestion, client, extra)
-    comp = compose(result.input, receipts, ledger.settings.교사명단, ledger.settings.기본정보.회계연도,
+    comp = compose(result.input, receipts, ledger.settings.교사명단, ledger.year,
                    bool(progress_note), bool(suggestion))
     comp.calls.append(result.info)
     return comp

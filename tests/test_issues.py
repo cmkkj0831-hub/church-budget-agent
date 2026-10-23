@@ -3,6 +3,7 @@ from datetime import date
 
 import pytest
 
+from core.changes import record_unit, snapshot
 from core.issues import IssueBook, apply_resolution, cumulative_reconciliation
 from core.ledger import BlockedError, Ledger
 from core.models import LedgerChange, LedgerRow, Resolution
@@ -28,9 +29,12 @@ def test_initial_remarks(book):
 
 def test_resolution_a_withdrawn(ledger, book, data_dir):
     """해결 A: 철회됨 → 상태 취소(설명). 누계에서 480,000원이 빠진다."""
+    base = snapshot(ledger, book)
     res = apply_resolution(ledger, book, "I-019", Resolution(
         방식="설명", 내용="철회됨: 부서 운영비 신청 철회, 지급 없음", 처리자=WHO, 처리일=TODAY,
         변경=[LedgerChange(순번=38, 열="상태", 값="취소")], 함께해결=["I-018"]))
+    unit = record_unit(ledger, book, base, "이슈: I-019 해결(설명됨)", WHO, "I-019")
+    assert {h.이력ID for h in book.history if h.이력ID == unit} == {unit}
 
     assert (res.누계_전, res.누계_후, res.잔여_후) == (CUM, CUM - 480_000, ALLOC - CUM + 480_000)
     assert res.diff == [{"순번": 38, "열": "상태", "변경전": "보고서없음", "변경후": "취소"}]
@@ -48,7 +52,8 @@ def test_resolution_a_withdrawn(ledger, book, data_dir):
     rec = cumulative_reconciliation(ledger, book)  # 38 단절이 사라지고 남은 차이 2,850은 I-016
     assert (rec.summary.문서기준, rec.summary.재계산, rec.summary.차이) == (23_216_860, CUM - 480_000, 2_850)
     assert [i["순번"] for i in rec.항목] == [32, 37] and rec.설명됨
-    assert book.history[-1].변경전 == "보고서없음" and book.history[-1].변경후 == "취소"
+    h = next(h for h in book.history if h.이력ID == unit and h.대상 == "장부" and h.열 == "상태")
+    assert (h.순번, h.변경전, h.변경후) == (38, "보고서없음", "취소")
 
     ledger.save(); book.save()
     assert Ledger.load(data_dir).cumulative_requested() == CUM - 480_000
@@ -60,23 +65,27 @@ def test_resolution_b_paid(ledger, book, data_dir):
     report = LedgerRow(월="7월", 구분="집행보고서", 작성일="2026년 10월 23일", 자체예산=0,
                        본당보조=480_000, 합계=480_000, 잔액=0, 행사명="부서 운영비", 사업ID="P13",
                        연결문서번호="(예)2026-037")
+    base = snapshot(ledger, book)
     res = apply_resolution(ledger, book, "I-019", Resolution(
         방식="정정", 내용="지급됨: 1~8월분 부서 운영비 지급 확인, 집행보고서 추가", 처리자=WHO,
         처리일=TODAY, 추가행=[report]))
+    record_unit(ledger, book, base, "이슈: I-019 해결(정정)", WHO, "I-019")
 
     assert (res.누계_전, res.누계_후, res.잔여_후) == (CUM, CUM, ALLOC - CUM)
     new = ledger.row(54)
     assert (new.문서번호, new.파일명, new.상태) == ("(집)2026-053", "4_부서 운영비_보고서.hwpx", "정산완료")
     req = ledger.row(38)
     assert (req.연결문서번호, req.상태) == ("(집)2026-053", "정산완료")
-    assert ledger.settings.금액문서기준.다음문서번호 == 54
+    assert ledger.next_doc_number() == 54
     assert [d["열"] for d in res.diff] == ["(행 추가)", "연결문서번호", "상태"]
 
     assert book.get("I-019").상태 == "해결-정정"
     r38 = descs(book, 38)
     assert book.get("I-019").설명 not in r38
     assert book.get("I-018").설명 in r38  # 문서의 누계 미반영은 여전히 열린 이슈
-    assert len([h for h in book.history if h.이슈ID == "I-019"]) == 3
+    unit = [h for h in book.history if h.사유 == "이슈: I-019 해결(정정)"]
+    assert {(h.대상, h.열) for h in unit} >= {("장부", "(행 추가)"), ("장부", "연결문서번호"), ("장부", "상태"),
+                                             ("이슈", "상태"), ("이슈", "해결내용")}
 
     found = scan_ledger(ledger, book.issues, today=TODAY, include_registered=True)
     assert not any(f.유형 == "문서 누락" for f in found)
@@ -117,3 +126,15 @@ def test_correction_of_value(ledger, book):
     assert ledger.row(53).행사명 == "10월 교사회 운영비"
     assert book.get("I-022").설명 not in book.ledger_remarks()[53]
     assert book.ledger_remarks()[53] == book.get("I-023").설명  # 예산 경고만 남음
+
+
+def test_cancel_warns_about_later_documents(ledger, book):
+    """취소 전에 이미 나간 뒤 문서의 누계가 달라지면 반영 전 경고로 알려 준다."""
+    from datetime import date as d
+    from core.models import LineItem, RequestDoc
+    later = ledger.build_request(RequestDoc(월=11, 사업ID="P12", 행사명="11월 교리 준비비", 작성일=d(2026, 11, 1),
+                                            세부내역=[LineItem(내용="교재", 단가=10_000)]), today=TODAY)
+    row = ledger.commit(later, accept_warnings=True)[0]
+    res = apply_resolution(ledger, book, "I-019", Resolution(
+        방식="설명", 내용="철회", 처리자=WHO, 변경=[LedgerChange(순번=38, 열="상태", 값="취소")], 함께해결=["I-018"]))
+    assert any(f.코드 == "cumulative" and f.순번 == [row.순번] for f in res.경고)

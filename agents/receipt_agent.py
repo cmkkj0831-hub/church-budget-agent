@@ -115,7 +115,7 @@ def to_extraction(n: int, path, out: dict) -> ReceiptExtraction:
 def extract_receipts(paths: list, ledger, client=None) -> list[ReceiptExtraction]:
     """영수증마다 한 번씩 호출한다(장별 결과를 섞지 않기 위해). 순번은 입력 순서."""
     client = client or make_client()
-    system = SYSTEM.format(year=ledger.settings.기본정보.회계연도)
+    system = SYSTEM.format(year=ledger.year)
     out = []
     for n, path in enumerate(paths, 1):
         image = prepare_image(Path(path))

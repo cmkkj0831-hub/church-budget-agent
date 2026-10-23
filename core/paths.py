@@ -8,12 +8,14 @@ DATA_DIR = ROOT / "data"
 TEMPLATES_DIR = ROOT / "templates"
 OUT_DIR = ROOT / "out"
 
-LEDGER_CSV = DATA_DIR / "ledger.csv"
-PLAN_CSV = DATA_DIR / "plan.csv"
-PLAN_INFO_CSV = DATA_DIR / "plan_info.csv"
-ISSUES_CSV = DATA_DIR / "issues.csv"
-HISTORY_CSV = DATA_DIR / "history.csv"
-SETTINGS_JSON = DATA_DIR / "settings.json"
+SETTINGS_JSON = DATA_DIR / "settings.json"           # 현재 회계연도 포함, 민감값 제외
+PRIVATE_ENC = DATA_DIR / "settings_private.enc"      # 민감값(Fernet 암호화)
+YEAR_FILES = ("ledger.csv", "plan.csv", "plan_info.csv", "issues.csv", "history.csv", "usage.csv")
+
+
+def year_dir(year: int, data_dir=DATA_DIR) -> Path:
+    """data/{연도}/ — 장부·사업계획·이슈·이력·사용량."""
+    return Path(data_dir) / str(year)
 
 
 def nfc(s) -> str:

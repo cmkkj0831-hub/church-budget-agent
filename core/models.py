@@ -1,7 +1,7 @@
 """도메인 모델. 필드명은 양식·CSV의 한글 칸 이름을 그대로 쓴다."""
 import re
 from datetime import date, datetime
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, Field
 
@@ -10,6 +10,7 @@ EventType = Literal["행사·교육·피정", "성지순례·친교·기타"]
 IssueType = Literal["계산 불일치", "누계 누락", "기재 오류", "문서 누락", "번호 중복", "미확인", "예산 경고", "증빙 누락"]
 MAX_LINE_ITEMS = 7  # 양식 세부내역 기본 칸 수(신청서·보고서 공통). 넘으면 행 복제 또는 묶기
 RowMode = Literal["clone", "group"]
+ISSUE_TYPES_ALL = list(get_args(IssueType))
 FormKind = Literal["구", "신"]  # 구: 1~4월 초 양식(보고서 '반납금액' 칸, 신청서 보좌신부 결재란)
 IssueState = Literal["미해결", "확인중", "해결-정정", "해결-설명됨"]
 
@@ -144,25 +145,47 @@ class DrafterInfo(BaseModel):
 
 
 class DocRules(BaseModel):
-    예산배정액: int
     운영비단가: int
     교사수: int
     결재란: list[str]
-    신청서번호접두: str
+    신청서번호접두: str  # '{연도}'를 회계연도로 바꿔 쓴다. 예: "(예){연도}-"
     보고서번호접두: str
-    다음문서번호: int
     기본시작시각: str
     기본종료시각: str
 
 
+class YearInfo(BaseModel):
+    """회계연도별 값(data/settings.json `연도별`)."""
+    예산배정액: int
+    다음문서번호: int = 1  # 최소값. 실제 다음 번호는 장부의 마지막 번호 + 1과 비교해 큰 쪽
+    마감: bool = False     # 지난 연도: 읽기 전용
+
+
+class UsagePricing(BaseModel):
+    """LLM 사용량 비용 계산용(설정에서 입력, 코드에 고정하지 않음)."""
+    입력_USD_1M: float = 0
+    출력_USD_1M: float = 0
+    환율_KRW_USD: float = 0
+
+
 class Settings(BaseModel):
-    기본정보: BasicInfo
+    기본정보: BasicInfo  # 기본정보.회계연도 = 현재 회계연도
     기안정보: DrafterInfo
     금액문서기준: DocRules
     교사명단: list[str]
     모델: str
     hwpx_row_mode: RowMode = "clone"  # 세부내역이 양식 칸보다 많을 때: clone(행 복제) | group(계정과목별 묶기)
     llm_fallbacks: Literal["off", "default"] = "off"  # 거절 시 서버 측 대체 모델(agents/llm.py 참고). 기본 끔
+    연도별: dict[str, YearInfo] = Field(default_factory=dict)
+    사용량단가: UsagePricing = Field(default_factory=UsagePricing)
+    진행상태: dict = Field(default_factory=dict)  # 회계연도 전환 마법사·인수인계 체크리스트 진행 상태
+
+    @property
+    def 현재연도(self) -> int:
+        return self.기본정보.회계연도
+
+    def year_info(self, year: int) -> YearInfo:
+        return self.연도별[str(year)]
 
 
 class PlanItem(BaseModel):
@@ -192,6 +215,11 @@ class Issue(BaseModel):
     첨부: str = ""
     처리자: str = ""
     처리일: date | None = None
+    검토메모: str = ""  # VIEWER(회계담당)가 남긴 설명 — WRITER 화면에 '검토 대기'로 표시
+
+    @property
+    def 검토대기(self) -> bool:
+        return self.열림 and bool(self.검토메모.strip())
 
     @property
     def 열림(self) -> bool:
@@ -227,10 +255,12 @@ class Resolution(BaseModel):
 
 
 class HistoryEntry(BaseModel):
+    """장부·이슈 변경 1건. 같은 반영(되돌리기 단위)의 항목은 이력ID가 같다."""
     이력ID: str
     일시: str
+    대상: str = "장부"  # 장부 | 이슈
     이슈ID: str
-    순번: int
+    순번: int | None = None
     열: str
     변경전: str = ""
     변경후: str = ""

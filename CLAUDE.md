@@ -1,6 +1,28 @@
 # church-budget-agent
 
-천주교 서울대교구 개포동성당 초등부 교사회의 예산신청서(서식1)·집행보고서(서식2)를 hwpx로 자동 생성하고, 회계 장부를 갱신하며, 장부의 오류·이상 사항을 이슈로 관리하고, 회계관리자가 Streamlit 대시보드로 확인하는 시스템.
+천주교 서울대교구 개포동성당 초등부 교사회의 예산신청서(서식1)·집행보고서(서식2)를 hwpx로 자동 생성하고, 회계 장부를 갱신하며, 장부의 오류·이상 사항을 이슈로 관리하는 Streamlit 웹앱. 회계담당 1인이 운영한다.
+
+## 운영 방식 (2026-10-23 변경)
+
+- **운영 주체**: 회계담당 1인(ADMIN)이 모든 권한을 가진다. 회계담당은 매년 바뀌고 인수인계한다.
+  개발자는 운영에 관여하지 않으며 개발자 전용 화면은 없다(WRITER 개념 삭제).
+  새 담당자가 개발자 없이 앱만으로 한 해를 시작할 수 있어야 한다(회계연도 전환 마법사, 인수인계, docs/사용설명서.md).
+  예외: Anthropic API 키 — 회계담당이 개발자에게 전달하면 개발자가 Streamlit Cloud Secrets에서 교체한다.
+- **권한**: ADMIN = 모든 기능. VIEWER(선택) = 대시보드 보기와 엑셀 다운로드만(사용량 탭 제외).
+  secrets에 VIEWER_PASSWORD가 없으면 VIEWER 로그인은 숨긴다.
+- **비밀값**
+  - secrets: ANTHROPIC_API_KEY, GITHUB_TOKEN, GITHUB_REPO, DATA_BRANCH, SETTINGS_KEY(Fernet 키),
+    ADMIN_PASSWORD(최초 접속·비상 복구), VIEWER_PASSWORD(선택), APP_ENV(dev|prod)
+  - data/settings_private.enc(Fernet 암호화, 앱에서 ADMIN이 편집): 관리자 비밀번호 bcrypt 해시(설정되면 ADMIN_PASSWORD보다
+    우선 — ADMIN_PASSWORD로 로그인하면 '비상 복구'로 보고 새 비밀번호를 정하라고 안내), 연락처, 은행명·계좌번호·예금주, 문서별 계좌
+  - API 키는 앱에서 입력·저장하지 않는다. 설정 화면에는 상태만(설정됨/없음, 끝 4자리, 마지막 호출 성공 시각)
+- **검토자 부재 대비**: 모든 장부 반영 전 변경 전후 비교 + 확인 체크박스. 반영 단위로 [되돌리기](장부·이슈 함께 복원,
+  되돌리기 자체도 이력에 기록, 이후 같은 칸이 바뀌었으면 거부) — `core.changes`
+- **데이터는 연도별**: data/{연도}/ledger.csv·plan.csv·plan_info.csv·issues.csv·history.csv·usage.csv,
+  data/settings.json(현재 회계연도 `기본정보.회계연도`, 연도별 배정액·다음 번호·마감은 `연도별`, 민감값 제외),
+  data/settings_private.enc. 지난 연도(`연도별[연도].마감`)는 읽기 전용.
+- **LLM 사용량**: 모든 호출을 data/{연도}/usage.csv에 기록(시각, 기능, 모델, 요청모델, 대체모델, 입력·출력 토큰, 소요초, APP_ENV).
+  토큰 단가·환율은 설정(`사용량단가`)에서 입력하고 코드에 고정하지 않는다.
 
 - Python 3.11+ (로컬 venv `budget_env/`는 3.13), Streamlit, Claude API(모델은 `data/settings.json`의 `모델`)
 - 실행: `budget_env/bin/pip install -r requirements.txt`, 테스트 `budget_env/bin/python -m pytest tests`
@@ -11,7 +33,13 @@
 ## 폴더 구조
 
 ```
-app/        Streamlit 웹앱(대시보드)
+app/        Streamlit 멀티페이지 앱 (streamlit run app/Home.py)
+  Home.py     로그인(ADMIN/VIEWER) → 권한별 st.navigation(VIEWER: 대시보드만), 상단 회계연도·이슈 배지
+  lib.py      공통: 저장소·세션 상태(연도별), persist(반영 이력 기록 + 커밋, 충돌 처리), undo, 민감 설정(암호화),
+              LLM 사용량 기록 훅, 문서 생성, 문서별 계좌 덮어쓰기, 다운로드 안내, 장부 변화 요약, topbar
+  forms.py    설정·연도 전환 공용 입력(기본 정보·연락처·계좌·교사명단, 비밀번호 변경, API 키 상태)
+  views/      request(📝) report(🧾) post_settlement(🔁) issues(⚠️, 이력·되돌리기·재검사) dashboard(📊, 연도 선택·사용량)
+              settings(⚙️) year(🗓️ 회계연도 전환 마법사) handover(📋 인수인계)
 core/       장부·이슈·계산 엔진 (순수 Python, UI·LLM 의존성 없음)
   paths.py    경로 상수, NFC 헬퍼
   models.py   pydantic 모델: LineItem, RequestDoc, ReportDoc, LedgerRow, Settings, PlanItem, Issue, Resolution
@@ -23,6 +51,15 @@ core/       장부·이슈·계산 엔진 (순수 Python, UI·LLM 의존성 없�
   export.py   장부+이슈 → 회계내역 xlsx (python -m core.export → out/)
   migrate.py  2026 엑셀 → data/ 1회 이관 (python -m core.migrate). --force는 이슈 처리·이력을 지우므로 쓰지 않는다
   secrets.py  .streamlit/secrets.toml 읽기, apply_secrets(연락처·계좌 채움, 계좌 우선순위 아래 참고)
+  storage.py  저장 계층: 세션별 data/ 전체 작업 사본(Workspace, 상대 경로) → commit(바뀐·새 파일). LocalStorage(내용 해시)·
+              GitHubStorage(PyGithub, 파일 sha, 한 커밋, 바이너리는 blob), 받은 뒤 원본이 바뀌었으면 ConflictError.
+              secrets에 GITHUB_TOKEN이 있으면 GitHub 모드(GITHUB_REPO, DATA_BRANCH)
+  changes.py  반영 단위 이력(record_unit: snapshot 대비 장부 칸·행 추가/삭제·이슈 추가/필드 변경을 같은 이력ID로)과
+              되돌리기(undo_unit), units(반영 목록)
+  private.py  settings_private.enc(Fernet) 읽기·쓰기, 관리자 비밀번호(bcrypt) 확인·변경, mask
+  usage.py    usage.csv 기록·집계(월·기능·환경), 예상 비용·연간 예상(단가는 설정)
+  plan_io.py  사업계획서 xlsx 읽기(2026 형식, 천원/원), 검증(월별 배분 합 = 본당예산, 배정액), plan.csv 쓰기
+  year.py     회계연도 전환: close_year(마감), start_year(새 연도 폴더·빈 장부·이월 이슈·설정 전환)
 hwpx/       hwpx 읽기·생성
   text.py     hwp/hwpx 텍스트 추출(extract_text), hwpx 표 칸 읽기(read_cells, cells_from_xml)
   layout.py   서식1·2 칸 매핑(라벨 기반 resolve) — fill·reader 공용. 빈 양식 기준 주소 REQUEST_CELLS/REPORT_CELLS
@@ -41,15 +78,16 @@ agents/     Claude API 호출(정보 추출·문장 작성만. 계산·검증은
   report_agent.py     영수증 + progress_note + suggestion → ReportDoc 초안(금액은 영수증 합, 경과보고 줄은 코드가 렌더링)
   post_settlement.py  영수증 + 경과보고 → 보고서 초안 → core.build_post_settlement(신청서 역생성)
   issue_agent.py      이슈 + 사용자 설명 + 첨부 hwpx → 해결 제안(정정/설명/추가 확인 필요), 장부 복사본에 적용해 검증
+  plan_agent.py       사업계획서 사진 → 사업 행(금액은 적힌 그대로 + 단위, 원 환산·검증은 코드)
 scripts/    eval_extraction.py(8월 신앙학교 영수증 추출 ↔ 보고서 금액 비교, 실제 API 호출)
 data/       장부와 설정(커밋 대상)
-  ledger.csv         문서 1건 = 1행. 비고 열 없음
-  plan.csv           사업계획(원 단위), 사업ID P01~P15, 1월~12월 배분
-  plan_info.csv      사업계획서 개요·비고
-  issues.csv         이슈
-  history.csv        장부 변경 이력(이슈 해결로만 생김)
-  settings.json      기본·기안·금액·문서 기준, 교사명단, 모델 (민감값 없음)
-docs/       문서
+  settings.json        현재 회계연도, 기본·기안·금액·문서 기준, 연도별(배정액·다음 번호·마감), 교사명단, 모델, 사용량단가,
+                       진행상태(연도 전환·인수인계) — 민감값 없음
+  settings_private.enc 민감값(Fernet 암호화, 앱에서 처음 저장할 때 생김)
+  {연도}/ledger.csv    문서 1건 = 1행. 비고 열 없음
+  {연도}/plan.csv      사업계획(원 단위), 1월~12월 배분 / plan_info.csv 개요·비고
+  {연도}/issues.csv    이슈 / history.csv 반영 단위 이력(이력ID 같은 행 = 한 반영) / usage.csv LLM 사용량
+docs/       사용설명서.md(앱 '인수인계' 화면에서도 보임)
 tests/      pytest
 templates/  request_template.hwpx, report_template.hwpx (빈 공식 양식)
 templates/examples/  실제 작성 예시 — 커밋 금지
@@ -109,7 +147,8 @@ out/        생성 결과물 — 커밋 금지
 
 - 장부 값은 근거 없이 바꾸지 않는다. 이상 사항은 이슈로 남긴다.
 - 비고 = 열린 이슈(미해결·확인중)의 설명. 이슈가 해결되면 비고에서 사라진다(`derive_remarks`).
-- 장부 변경은 이슈 해결을 통해서만 하고, 전후 값과 사유를 `history.csv`에 남긴다. 이슈는 삭제하지 않는다.
+- 장부 변경은 문서 생성과 이슈 해결로만 하고, 반영마다 전후 값과 사유를 `history.csv`에 남긴다(`core.changes.record_unit`,
+  앱은 `lib.persist`). 이슈는 삭제하지 않는다(단, 생성을 되돌리면 그 반영이 만든 이슈도 함께 빠진다).
 - 장부 정정은 `core.issues.apply_resolution(ledger, book, 이슈ID, Resolution)`로만 한다.
   - 정정: 대상 행 값 변경(`변경`) 또는 행 추가(`추가행`, 순번·문서번호·파일명 자동, 연결 신청서 역연결). → 해결-정정
   - 설명: 값 유지, 사유 기록, `상태` 열만 변경 가능(예: 취소). → 해결-설명됨
@@ -123,13 +162,15 @@ out/        생성 결과물 — 커밋 금지
   - 증빙 누락: 보고서 금액을 뒷받침할 영수증이 부족(예: I-026 8월 신앙학교 728,330원)
   - 예산 경고는 문서 오류가 아니라 사업계획 대비 초과(실집행 > 계획, 연말 예상 > 계획). 표시 색 주황(C65911), 문서 오류는 빨강(C00000) — `issues.issue_color`
   - 연말 예상 = 실집행 + 남은 달(매달 배분 사업이 최근 두 달 연속 신청 중이면 최근 신청액, 아니면 계획 월 배분)
-  - 상태: 미해결 / 확인중 / 해결-정정 / 해결-설명됨
+  - 상태: 미해결 / 확인중 / 해결-정정 / 해결-설명됨. 검토메모: 확인 중인 내용 메모(오류 관리 화면)
+  - 표시 색: 문서 오류(계산 불일치·누계 누락·기재 오류·문서 누락·번호 중복) 빨강, 예산 경고 주황, 증빙 누락·미확인 회색
   - 대상이 여럿이면 대상순번·대상문서번호·관련이슈를 `;`로 구분(예: `4;5`).
 
 ## 보안 규칙
 
 - 연락처·계좌번호, 영수증 이미지, `2026년/` 원본 문서, `templates/examples/`, `out/`, `.streamlit/secrets.toml`은 커밋하지 않는다(.gitignore 등록).
-- 민감값(연락처, 은행명, 계좌번호, 예금주)은 settings.json이 아니라 `.streamlit/secrets.toml`에서 읽는다(`secrets.toml.example` 참고).
+- 민감값(연락처, 은행명, 계좌번호, 예금주)은 settings.json에 넣지 않는다. `data/settings_private.enc`(Fernet, 키는 secrets
+  `SETTINGS_KEY`)에 암호화해 두고 앱 설정 화면에서 고친다(`secrets.toml.example` 참고).
 - 커밋 전 `git status`로 확인한다.
 
 ## 진행 상황
@@ -159,4 +200,14 @@ out/        생성 결과물 — 커밋 금지
   - 8월 캠프 영수증 폴더는 없음. 신앙학교 자체예산 사용내역.xlsx는 암호화돼 정답으로 못 씀
   - 세례명만으로 여러 명이 맞으면 report_agent가 참가자_선택(후보 목록)을 돌려준다(5단계 화면에서 선택)
   - I-026 등록(증빙 누락): 순번 45·49 신앙학교 보고서, 영수증 728,330원 부족
-- [ ] 5단계 Streamlit 대시보드(app/)
+- [x] 5단계 (2026-10-23) Streamlit 웹앱 + 운영 방식 변경(회계담당 단독·연도별 데이터·암호화 설정·되돌리기·사용량·
+  회계연도 전환·인수인계). 데이터 data/ → data/2026/(값 변경 없음, history에 '대상' 열, issues에 '검토메모' 열)
+  - 앱 규칙: 생성·반영 전 미리보기 + 확인 체크, 생성 뒤에는 결과만 표시(바뀐 장부로 다시 계산한 화면을 보이지 않음),
+    반영 후 장부 변화(다음 문서번호·누계·잔여·해결된 이슈) 표시, 다운로드 시 '{연도}/{월} 폴더' 안내와 권장 파일명
+  - 커밋 메시지: "장부: (예)2026-053 성탄 행사 신청서 추가", "이슈: I-019 해결(설명됨)", "이슈: I-019 확인중(회계담당 설명)"
+  - 이슈에 검토메모 열 추가(확인 중 메모). 함께해결은 회계담당이 반영 전에 고친다
+  - 예산 영향 금액(core.issues.budget_impact): 누계 누락·문서 누락=누계 단절, 계산 불일치=설명의 차이/행 어긋남,
+    예산 경고=계획 초과액, 증빙 누락=설명의 부족액, 그 밖 0
+  - 누계 단절(cumulative_breaks)은 자기 누계가 재계산과 같은 문서(차이 0)를 제외(앞 오류를 바로잡은 곳)
+  - 이슈 해결로 뒤 문서의 누계가 새로 어긋나면 반영 전 경고(ResolutionResult.경고)
+  - 테스트: tests/test_app.py(AppTest 시나리오, FakeClient), tests/test_storage.py(로컬·GitHub 대역)

@@ -145,7 +145,7 @@ def to_draft(out: dict, ledger: Ledger) -> RequestDraft:
 
 def extract_request(text: str, ledger: Ledger, today: date | None = None, client=None) -> RequestDraft:
     today = today or date.today()
-    system = SYSTEM.format(year=ledger.settings.기본정보.회계연도, plan=_plan_table(ledger),
+    system = SYSTEM.format(year=ledger.year, plan=_plan_table(ledger),
                            today=today.isoformat())
     result = call(ledger, client, system, text, SPEC)
     draft = to_draft(result.input, ledger)
