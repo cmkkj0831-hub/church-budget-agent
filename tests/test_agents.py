@@ -276,6 +276,17 @@ def test_post_settlement_flow(ledger):
     assert "사후정산" in fake.prompt()
 
 
+def test_post_settlement_sends_chosen_business(ledger):
+    out = _report_output(사업ID_후보=[{"사업ID": "P12", "근거": "교리"}], 대상월=10, 행사명_제안="10월 교리 준비비")
+    fake = FakeClient(tool_response("submit_report_draft", out))
+    post_settlement.draft_post_settlement(RECEIPTS[:1], None, ledger, 사업ID="P12", 월=10, 행사명="10월 교리 준비비",
+                                          client=fake, today=TODAY)
+    prompt = fake.prompt()
+    p = ledger.plan["P12"]
+    assert f"사업: P12 {p.사업명}" in prompt and "대상 월: 10월" in prompt and "행사명: 10월 교리 준비비" in prompt
+    assert "[연결 신청서]" not in prompt and "후보를 제안하라" not in prompt
+
+
 def test_post_settlement_missing_business(ledger):
     out = _report_output(사업ID_후보=[], 대상월=None, 행사명_제안=None)
     r = post_settlement.draft_post_settlement(RECEIPTS[:1], None, ledger,

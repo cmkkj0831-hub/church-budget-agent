@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from agents import report_agent
+from agents.post_settlement import NOTE, context_lines
 from agents.llm import AgentError
 from agents.receipt_agent import extract_receipts
 from core.ledger import BlockedError
@@ -47,15 +48,17 @@ with st.container(border=True):
     c.text_input("행사명", key="ps_name", placeholder=f"예: {lib.today().month}월 {L.plan[pid].사업명}")
     lib.uploader("영수증 이미지·PDF (여러 장)", "ps_files", ["jpg", "jpeg", "png", "heic", "pdf"])
     st.text_area("경과보고(자연어)", key="ps_note", height=100)
-    st.text_area("차기 계획·건의사항(선택)", key="ps_suggestion", height=60)
+    st.caption("위에서 고른 사업·대상 월·행사명을 Claude에 함께 알려 경과보고를 씁니다. 바꿨다면 초안을 다시 만드세요.")
     if st.button("영수증 읽고 보고서 초안 만들기", type="primary", disabled=not ss.get("ps_files")):
         try:
             with st.spinner("영수증을 읽는 중…"):
                 ss.ps_receipts = extract_receipts(lib.save_uploads("ps_files"), L, client=lib.llm_client())
             with st.spinner("보고서 초안을 쓰는 중…"):
-                note = "\n\n[사후정산] 신청서 없이 보고서를 먼저 작성한다."
-                answer = report_agent.ask(L, None, ss.ps_receipts, ss.ps_note, ss.ps_suggestion, lib.llm_client(), note)
+                context = context_lines(L, pid, int(ss.ps_month), (ss.get("ps_name") or "").strip())
+                answer = report_agent.ask(L, None, ss.ps_receipts, ss.ps_note, None, lib.llm_client(), NOTE,
+                                          context=context)
                 ss.ps_out, ss.ps_call = answer.input, answer.info
+                ss.ps_basis = (pid, int(ss.ps_month), (ss.get("ps_name") or "").strip())
                 ss.ps_body_reset, ss.ps_result = True, None
         except AgentError as e:
             st.error(f"초안을 만들지 못했습니다: {e}")
@@ -63,10 +66,11 @@ with st.container(border=True):
 if not ss.get("ps_out"):
     st.stop()
 receipts = ss.ps_receipts
-comp = report_agent.compose(ss.ps_out, receipts, L.settings.교사명단, L.year,
-                            bool(ss.ps_note), bool(ss.ps_suggestion))
+comp = report_agent.compose(ss.ps_out, receipts, L.settings.교사명단, L.year, bool(ss.ps_note), False)
 if ss.pop("ps_body_reset", False):
-    ss.ps_body, ss.ps_sugg = comp.경과보고, comp.건의사항
+    ss.ps_body = comp.경과보고
+if ss.get("ps_basis") and ss.ps_basis != (pid, int(ss.ps_month), (ss.get("ps_name") or "").strip()):
+    st.warning("초안을 만든 뒤 사업·대상 월·행사명을 바꿨습니다. 경과보고에 반영하려면 [영수증 읽고 보고서 초안 만들기]를 다시 누르세요.")
 event_name = (ss.get("ps_name") or "").strip() or (comp.행사명_제안 or "")
 if not (ss.get("ps_name") or "").strip() and comp.행사명_제안:
     st.info(f"행사명을 비워 두어 Claude 제안 '{comp.행사명_제안}'을 씁니다(위에서 바꿀 수 있습니다).")
@@ -86,13 +90,12 @@ with st.container(border=True):
     if comp.사업ID_후보 and comp.사업ID_후보[0].get("사업ID") != pid:
         st.info("Claude가 제안한 사업: " + ", ".join(f"{c['사업ID']}({c['근거']})" for c in comp.사업ID_후보))
     st.text_area("경과보고", key="ps_body", height=150)
-    st.text_area("건의사항", key="ps_sugg", height=60)
     for w in comp.warnings:
         st.warning(f"🔎 {w}")
 
 # ---------------------------------------------------------------- 3. 한도 계산·검증
 draft = ReportDoc(월=int(ss.ps_month), 사업ID=pid, 행사명=event_name, 작성일=lib.today(),
-                  세부내역=comp.세부내역, 경과보고=ss.ps_body, 건의사항=ss.ps_sugg)
+                  세부내역=comp.세부내역, 경과보고=ss.ps_body)
 used = sum(i.단가 * i.수량 for i in draft.세부내역)
 limit = L.business_limit(pid)
 with st.container(border=True):

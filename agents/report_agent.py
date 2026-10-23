@@ -21,7 +21,7 @@ FORMAT_EXAMPLE = """8월 교사회 운영비를 다음과 같이 사용하였습
 8월 16일 회합 후 다과 : 43,300원 / 참가자 : 홍길동 베드로"""
 
 SYSTEM = """너는 천주교 개포동성당 초등부 교사회의 예산집행보고서(서식2) 초안을 쓴다.
-입력: 연결된 예산신청서 정보, 영수증 목록(번호·날짜·상호·금액·품목), 경과보고 메모(progress_note, 없을 수 있음),
+입력: 연결된 예산신청서 정보(사후정산이면 신청서 대신 회계담당이 고른 사업·대상 월·행사명), 영수증 목록(번호·날짜·상호·금액·품목), 경과보고 메모(progress_note, 없을 수 있음),
 차기 계획·건의사항 메모(suggestion, 없을 수 있음).
 
 할 일
@@ -34,6 +34,8 @@ SYSTEM = """너는 천주교 개포동성당 초등부 교사회의 예산집행
    - progress_note가 없으면 영수증만으로 줄을 만든다(노트_언급=false, 노트_날짜·노트_금액 null).
    - 참가자는 노트에 적힌 사람만, 적힌 그대로 옮긴다. 명단에서 짐작해 추가하지 않는다.
    - 머리말은 "N월 ○○을 다음과 같이 사용하였습니다." 같은 한 문장.
+   - 사후정산이면 회계담당이 고른 사업·행사명·대상 월을 기준으로 머리말·항목·세부내역 내용을 쓰고,
+     사업ID_후보·행사명_제안·대상월도 그 값을 따른다(영수증과 맞지 않아 보이면 불일치_메모에 적는다).
 3. 건의사항: suggestion이 있으면 공문서 말투로 다듬는다. 없으면 빈 문자열.
 4. 노트와 영수증이 서로 맞지 않는 점이 보이면 불일치_메모에 짧게 적는다.
 5. [대행사 표기]인 영수증은 가맹점명이 결제대행사라 실제 가게가 아니다. progress_note에 그 결제의 실제 상호가
@@ -256,15 +258,19 @@ def _request_lines(request) -> str:
     return "\n".join(f"{k}: {getattr(request, k)}" for k in keys if getattr(request, k, None) not in (None, ""))
 
 
-def ask(ledger: Ledger, request, receipts, progress_note, suggestion, client, extra: str = ""):
-    text = (f"[연결 신청서]\n{_request_lines(request)}\n\n[영수증]\n{_receipt_lines(receipts)}\n\n"
+def ask(ledger: Ledger, request, receipts, progress_note, suggestion, client, extra: str = "", context: str = ""):
+    """context: 사후정산에서 회계담당이 고른 사업·대상 월·행사명(agents.post_settlement.context_lines).
+    있으면 [연결 신청서] 대신 보낸다."""
+    head = (f"[사후정산 사업·행사 — 회계담당이 고름, 이 기준으로 작성]\n{context}" if context
+            else f"[연결 신청서]\n{_request_lines(request)}")
+    text = (f"{head}\n\n[영수증]\n{_receipt_lines(receipts)}\n\n"
             f"[progress_note]\n{progress_note or '(없음)'}\n\n[suggestion]\n{suggestion or '(없음)'}{extra}")
     return call(ledger, client, _system(ledger), text, SPEC, effort="high")
 
 
 def compose_report(ledger: Ledger, request, receipts: list[ReceiptExtraction], progress_note: str | None = None,
-                   suggestion: str | None = None, client=None, extra: str = "") -> ReportComposition:
-    result = ask(ledger, request, receipts, progress_note, suggestion, client, extra)
+                   suggestion: str | None = None, client=None, extra: str = "", context: str = "") -> ReportComposition:
+    result = ask(ledger, request, receipts, progress_note, suggestion, client, extra, context)
     comp = compose(result.input, receipts, ledger.settings.교사명단, ledger.year,
                    bool(progress_note), bool(suggestion))
     comp.calls.append(result.info)

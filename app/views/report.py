@@ -52,7 +52,6 @@ with st.container(border=True):
     lib.uploader("영수증 이미지·PDF (여러 장)", "rep_files", ["jpg", "jpeg", "png", "heic", "pdf"])
     st.text_area("경과보고(자연어)", key="rep_note", height=100,
                  placeholder="예: 8/15 미사 후 식대 29만2천원 연재, 플로라 / 8/16 회합 후 식대 4만3천원 연재")
-    st.text_area("차기 계획·건의사항(선택)", key="rep_suggestion", height=70)
     if st.button("영수증 읽기", disabled=not ss.get("rep_files")):
         with st.spinner(f"영수증 {len(ss.rep_files)}장을 읽는 중…"):
             try:
@@ -91,7 +90,7 @@ with st.container(border=True):
     if st.button("보고서 초안 만들기", type="primary"):
         with st.spinner("Claude가 세부내역·경과보고를 정리하는 중…"):
             try:
-                answer = report_agent.ask(L, request, receipts, ss.rep_note, ss.rep_suggestion, lib.llm_client())
+                answer = report_agent.ask(L, request, receipts, ss.rep_note, None, lib.llm_client())
                 ss.rep_out, ss.rep_call = answer.input, answer.info
                 ss.rep_body_reset = True
                 ss.rep_result = None
@@ -102,17 +101,16 @@ if not ss.get("rep_out"):
     st.stop()
 
 # 영수증을 고쳐도 LLM을 다시 부르지 않고, 보관한 묶음(rep_out)으로 금액·경고를 다시 계산한다
-comp = report_agent.compose(ss.rep_out, receipts, L.settings.교사명단, L.year,
-                            bool(ss.rep_note), bool(ss.rep_suggestion))
+comp = report_agent.compose(ss.rep_out, receipts, L.settings.교사명단, L.year, bool(ss.rep_note), False)
 if ss.pop("rep_body_reset", False):
-    ss.rep_body, ss.rep_sugg = comp.경과보고, comp.건의사항
+    ss.rep_body = comp.경과보고
 
 # ---------------------------------------------------------------- 3. 경과보고·참가자·계좌
 with st.container(border=True):
     st.markdown("**3. 경과보고 초안** (직접 고칠 수 있습니다)")
     st.caption(ss.rep_call.line())
     if st.button("영수증 수정 내용으로 경과보고 다시 채우기"):
-        ss.rep_body, ss.rep_sugg = comp.경과보고, comp.건의사항
+        ss.rep_body = comp.경과보고
     for k, choice in enumerate(comp.참가자_선택):
         key = f"rep_pick_{k}"
         prev = ss.get(f"{key}_applied", choice["입력"])  # 경과보고에 지금 들어 있는 이름
@@ -123,13 +121,12 @@ with st.container(border=True):
                                      for ln in ss.rep_body.split("\n"))
             ss[f"{key}_applied"] = pick
     st.text_area("경과보고", key="rep_body", height=180)
-    st.text_area("건의사항", key="rep_sugg", height=70)
     st.dataframe(pd.DataFrame([{"계정과목": i.계정과목, "내용": i.내용, "금액": i.단가} for i in comp.세부내역]),
                  hide_index=True, width="stretch")
     account = lib.account_override("rep")
 
 draft = ReportDoc(**report_agent.report_fields(request), 작성일=ss.get("rep_date") or lib.today(),
-                  세부내역=comp.세부내역, 경과보고=ss.rep_body, 건의사항=ss.rep_sugg,
+                  세부내역=comp.세부내역, 경과보고=ss.rep_body,
                   계좌_override=account)
 build = L.build_report(draft, request, today=lib.today())
 built = build.docs[0]

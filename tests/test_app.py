@@ -183,6 +183,7 @@ def test_request_report_post_settlement_flow(data):
     metrics = {m.label: m.value for m in at.metric}
     assert (metrics["합계(B) 실사용"], metrics["본당보조"], metrics["잔액(반납)"]) == ("750,000원", "750,000원", "210,000원")
     assert "참가자 : 정연재 레오" in at.text_area(key="rep_body").value
+    assert not any("건의" in t.label or "차기" in t.label for t in at.text_area)  # 건의·차기계획 칸 없음
     confirm_and_click(at, "rep_confirm", "rep_accept", "보고서 생성·장부 반영")
     assert any("(집)2026-054" in s.value for s in at.success)
     L = Ledger.load(data)
@@ -195,8 +196,13 @@ def test_request_report_post_settlement_flow(data):
     at.session_state["ps_files"] = [("c.png", png_bytes())]
     at.text_area(key="ps_note").input("11/1 교리 간식 20만원")
     run_ok(at)
+    assert not any("건의" in t.label or "차기" in t.label for t in at.text_area)  # 건의·차기계획 칸 없음
     button(at, "영수증 읽고 보고서 초안 만들기").click()
     run_ok(at)
+    prompt = fake.prompt()
+    assert "[사후정산 사업·행사" in prompt and "사업: P12 " in prompt and "대상 월: 11월" in prompt
+    assert "행사명: 11월 교리 간식" in prompt and "[연결 신청서]" not in prompt
+    assert not any("건의" in t.label for t in at.text_area)
     assert "309,855원" in at.table[0].value.to_string()
     confirm_and_click(at, "ps_confirm", "ps_accept", "신청서·보고서 생성·장부 반영")
     assert any("사후정산 (예)2026-055" in s.value for s in at.success)

@@ -12,6 +12,25 @@ from core.ledger import BlockedError, BuildResult, Ledger
 from core.models import ReportDoc
 
 
+NOTE = "\n\n[사후정산] 신청서 없이 보고서를 먼저 작성한다."
+
+
+def context_lines(ledger: Ledger, 사업ID: str | None, 월: int | None = None, 행사명: str | None = None) -> str:
+    """회계담당이 고른 사업·대상 월·행사명을 Claude에 넘길 줄로(사업은 계획의 사업명·시기·세부내역까지)."""
+    lines = []
+    if 사업ID and 사업ID in ledger.plan:
+        p = ledger.plan[사업ID]
+        lines.append(f"사업: {p.사업ID} {p.사업명}")
+        if p.시기:
+            lines.append(f"사업 시기: {p.시기}")
+        if p.세부내역:
+            lines.append(f"사업 계획 세부내역: {p.세부내역}")
+    if 월:
+        lines.append(f"대상 월: {월}월")
+    lines.append(f"행사명: {행사명}" if 행사명 else "행사명: (미입력 — 위 사업에 맞게 행사명_제안)")
+    return "\n".join(lines)
+
+
 @dataclass
 class PostSettlementDraft:
     build: BuildResult | None            # docs = [신청서, 보고서]
@@ -26,8 +45,9 @@ def draft_post_settlement(receipts: list[ReceiptExtraction], progress_note: str 
                           suggestion: str | None = None, 작성일: date | None = None,
                           extra: dict | None = None, client=None, today: date | None = None) -> PostSettlementDraft:
     """extra: 보고서에 그대로 옮길 칸(목적, 시작, 종료, 장소, 참가대상, 인원 등)."""
-    note = "\n\n[사후정산] 신청서 없이 보고서를 먼저 작성한다. 행사명·대상 월·사업ID 후보도 제안하라."
-    comp = compose_report(ledger, None, receipts, progress_note, suggestion, client, extra=note)
+    note = NOTE + ("" if 사업ID and 월 and 행사명 else " 비어 있는 행사명·대상 월·사업ID는 후보를 제안하라.")
+    comp = compose_report(ledger, None, receipts, progress_note, suggestion, client, extra=note,
+                          context=context_lines(ledger, 사업ID, 월, 행사명))
     warnings = list(comp.warnings)
     missing = []
 
