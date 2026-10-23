@@ -32,7 +32,10 @@ hwpx/       hwpx 읽기·생성
   receipts.py 영수증 첨부 docx(build_receipts_docx): 이미지/PDF, EXIF 회전, 여백 자르기, 페이지 폭 맞춤
 agents/     Claude API 호출(정보 추출·문장 작성만. 계산·검증은 core)
   llm.py              공통 호출: 모델=settings `모델`, 키=ANTHROPIC_API_KEY(환경변수 → st.secrets → secrets.toml),
-                      출력은 strict 도구 1개 호출로 강제(tool_choice auto — Sonnet 5.5는 강제 불가), fallbacks="default"
+                      출력은 strict 도구 1개 호출로 강제(tool_choice auto — Sonnet 5.5는 강제 불가, 근거 링크는 llm.py 주석)
+                      fallbacks는 settings `llm_fallbacks`("off" 기본 | "default"). 호출마다 CallInfo(실제 응답 모델·시간·토큰)
+                      도구 스키마 제약(실제 호출로 확인): 속성 이름 ^[a-zA-Z0-9_.-]{1,64}$ → 한글 키는 ALIASES로 영문 변환,
+                      null 허용 enum은 anyOf, null 허용(union) 속성은 스키마당 16개까지
   request_agent.py    자연어 → RequestDoc 초안(missing·defaulted·사업ID 후보)
   receipt_agent.py    영수증 이미지/PDF/HEIC → 날짜·상호·금액·품목요약(못 읽으면 null + 확인필요)
   report_agent.py     영수증 + progress_note + suggestion → ReportDoc 초안(금액은 영수증 합, 경과보고 줄은 코드가 렌더링)
@@ -144,7 +147,10 @@ out/        생성 결과물 — 커밋 금지
   - 계정과목은 모든 항목이 같으면 첫 행에만 기재(예시는 칸 병합). 행사유형 칸은 표시하지 않음
   - LibreOffice는 hwpx를 열지 못해 렌더링은 한글에서 확인 필요. 영수증 docx 글꼴 기본 맑은 고딕
   - 샘플: out/샘플/ (커밋 제외)
-- [ ] 4단계 (진행 중) Claude 연동(agents/) — 단위 테스트(mock) 완료, 실제 API 스모크·추출 평가는 API 키 필요
-  - anthropic SDK 2.1.0, 모델 claude-sonnet-5-5(settings), 거절 대비 서버 측 fallbacks="default"(beta server-side-fallback-2026-07-01)
-  - 8월 캠프 영수증 폴더는 없음 → 평가는 신앙학교 영수증 22장. 신앙학교 자체예산 사용내역.xlsx는 암호화돼 정답으로 못 씀
+- [x] 4단계 (2026-10-23) Claude 연동(agents/) — mock 단위 테스트 + 실제 API 스모크 3건 통과
+  - anthropic SDK 2.1.0, 모델 claude-sonnet-5-5(settings), fallbacks 기본 끔(settings `llm_fallbacks`)
+  - 추출 평가(신앙학교 영수증 22장): 22장 모두 금액 읽음, 확인필요 1장(티셔츠 제작비.jpg 일자 없음), 표본 4장 수동 대조 일치.
+    합계 832,620원 < 보고서 1,560,950원(차이 728,330원) — 점심식사 440,000원 등 영수증이 폴더에 없는 것으로 보임
+  - 8월 캠프 영수증 폴더는 없음. 신앙학교 자체예산 사용내역.xlsx는 암호화돼 정답으로 못 씀
+  - 세례명만으로 여러 명이 맞으면 report_agent가 참가자_선택(후보 목록)을 돌려준다(5단계 화면에서 선택)
 - [ ] 5단계 Streamlit 대시보드(app/)

@@ -6,7 +6,7 @@ import copy
 import json
 from dataclasses import dataclass, field
 
-from agents.llm import arr, call_tool, i, make_client, model_of, nullable, obj, s, tool
+from agents.llm import CallInfo, arr, call, i, nullable, obj, s, tool
 from core.issues import IssueBook, ResolutionResult, apply_resolution, cumulative_reconciliation
 from core.ledger import LEDGER_COLUMNS, LEDGER_INT_COLUMNS, BlockedError, Ledger, parse_date
 from core.models import Issue, LedgerChange, LedgerRow, Resolution
@@ -55,6 +55,7 @@ class IssueAssist:
     설명문: str = ""
     첨부대조: list[dict] = field(default_factory=list)       # 첨부 문서 값 ↔ 장부 값 차이
     problems: list[str] = field(default_factory=list)        # 변경안을 받아들이지 못한 이유
+    calls: list[CallInfo] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------- 사실 모으기(코드)
@@ -203,11 +204,12 @@ def assist_issue(issue_id: str, ledger: Ledger, book: IssueBook, user_text: str,
         parts.append(f"[첨부 ↔ 장부 대조(프로그램 계산)] 대상 순번 {att_row.순번 if att_row else '없음'}\n"
                      + (json.dumps(att_diffs, ensure_ascii=False) if att_diffs else "(차이 없음)"))
 
-    out = call_tool(client or make_client(), model_of(ledger), SYSTEM, "\n\n".join(parts), SPEC, effort="high").input
+    answer = call(ledger, client, SYSTEM, "\n\n".join(parts), SPEC, effort="high")
+    out = answer.input
     res, problems = to_resolution(out, issue, book, 처리자)
     result = IssueAssist(issue, out["해결유형"], res, 추가질문=list(out.get("추가질문") or []),
                          남은의문=list(out.get("남은의문") or []), 설명문=out.get("설명문") or "",
-                         첨부대조=att_diffs, problems=problems)
+                         첨부대조=att_diffs, problems=problems, calls=[answer.info])
     if res is None:
         if out["해결유형"] != "추가 확인 필요":
             result.해결유형 = "추가 확인 필요"

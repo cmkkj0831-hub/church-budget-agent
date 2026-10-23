@@ -5,7 +5,7 @@
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-from agents.llm import arr, call_tool, i, make_client, model_of, nullable, obj, s, tool
+from agents.llm import CallInfo, arr, call, i, nullable, obj, s, tool
 from core.ledger import Ledger
 from core.models import LineItem, RequestDoc
 
@@ -16,7 +16,7 @@ SYSTEM = """너는 천주교 서울대교구 개포동성당 초등부 교사회
 사용자의 짧은 설명에서 신청서 칸에 들어갈 정보만 뽑는다.
 
 규칙
-- 적혀 있지 않은 정보는 추측하지 말고 null로 두고, 그 항목 이름을 missing에 넣는다.
+- 적혀 있지 않은 정보는 추측하지 말고 비워 두고(숫자는 null, 글자는 빈 문자열), 그 항목 이름을 missing에 넣는다.
   (장소·시각·참가대상은 비워 두면 프로그램이 설정 기본값으로 채운다. 이 경우에도 missing에는 넣지 않는다.)
 - 금액 합계·누계는 계산하지 않는다. 세부항목에는 단가와 수량만 적는다.
   "간식 3000원씩, 어린이 120명"이면 단가 3000, 수량 120이다. 수량을 알 수 없으면 그 항목 수량은 null.
@@ -30,19 +30,20 @@ SYSTEM = """너는 천주교 서울대교구 개포동성당 초등부 교사회
 
 오늘: {today}"""
 
+# strict 스키마는 null 허용(union) 속성이 16개까지라, 글자 칸은 null 대신 빈 문자열("")로 '없음'을 표시한다.
 SPEC = tool("submit_request_draft", "예산신청서 초안 정보 제출", obj({
-    "행사명": nullable(s()),
+    "행사명": s("없으면 빈 문자열"),
     "대상월": nullable(i("1~12")),
-    "행사유형": nullable({"type": "string", "enum": EVENT_TYPES}),
-    "목적": nullable(s()),
-    "시작일": nullable(s("YYYY-MM-DD")),
-    "시작시각": nullable(s("HH:MM, 적혀 있을 때만")),
-    "종료일": nullable(s("YYYY-MM-DD")),
-    "종료시각": nullable(s("HH:MM, 적혀 있을 때만")),
+    "행사유형": {"type": "string", "enum": [*EVENT_TYPES, ""], "description": "모르면 빈 문자열"},
+    "목적": s("없으면 빈 문자열"),
+    "시작일": s("YYYY-MM-DD, 없으면 빈 문자열"),
+    "시작시각": s("HH:MM, 적혀 있을 때만. 없으면 빈 문자열"),
+    "종료일": s("YYYY-MM-DD, 없으면 빈 문자열"),
+    "종료시각": s("HH:MM, 적혀 있을 때만. 없으면 빈 문자열"),
     "박": nullable(i()),
     "일": nullable(i()),
-    "장소": nullable(s()),
-    "참가대상": nullable(s()),
+    "장소": s("없으면 빈 문자열"),
+    "참가대상": s("없으면 빈 문자열"),
     "인원_총": nullable(i()),
     "인원_남": nullable(i()),
     "인원_여": nullable(i()),
@@ -62,6 +63,7 @@ class RequestDraft:
     defaulted: list[str] = field(default_factory=list)    # 설정 기본값으로 채운 항목
     candidates: list[dict] = field(default_factory=list)  # 사업ID 후보 [{사업ID, 근거, 사업명}]
     raw: dict = field(default_factory=dict)
+    calls: list[CallInfo] = field(default_factory=list)   # 호출 기록(실제 응답 모델·시간·토큰)
 
 
 def _plan_table(ledger: Ledger) -> str:
@@ -145,5 +147,7 @@ def extract_request(text: str, ledger: Ledger, today: date | None = None, client
     today = today or date.today()
     system = SYSTEM.format(year=ledger.settings.기본정보.회계연도, plan=_plan_table(ledger),
                            today=today.isoformat())
-    call = call_tool(client or make_client(), model_of(ledger), system, text, SPEC)
-    return to_draft(call.input, ledger)
+    result = call(ledger, client, system, text, SPEC)
+    draft = to_draft(result.input, ledger)
+    draft.calls.append(result.info)
+    return draft

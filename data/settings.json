@@ -41,5 +41,6 @@
     "조민기 사도요한"
   ],
   "모델": "claude-sonnet-5-5",
-  "hwpx_row_mode": "clone"
+  "hwpx_row_mode": "clone",
+  "llm_fallbacks": "off"
 }

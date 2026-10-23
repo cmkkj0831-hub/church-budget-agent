@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from functools import lru_cache
 
-from agents.llm import arr, call_tool, i, make_client, model_of, nullable, obj, s, tool
+from agents.llm import CallInfo, arr, call, i, nullable, obj, s, tool
 from agents.receipt_agent import ReceiptExtraction
 from core.ledger import BuildResult, Ledger
 from core.models import LedgerRow, LineItem, ReportDoc, RequestDoc
@@ -103,6 +103,8 @@ class ReportComposition:
     행사명_제안: str | None = None
     대상월: int | None = None
     사업ID_후보: list[dict] = field(default_factory=list)
+    참가자_선택: list[dict] = field(default_factory=list)  # 세례명이 겹쳐 고를 사람: {줄, 입력, 후보}
+    calls: list[CallInfo] = field(default_factory=list)
 
 
 @dataclass
@@ -131,16 +133,23 @@ def parse_md(text: str | None, year: int) -> date | None:
         return None
 
 
-def match_participant(name: str, roster: list[str]) -> str | None:
-    """'정연재', '정연재 레오', '레오'(세례명이 유일할 때) → 명단 표기. 못 찾으면 None."""
+def participant_candidates(name: str, roster: list[str]) -> list[str]:
+    """'정연재', '정연재 레오', '레오' → 맞는 명단 표기들. 하나면 확정, 둘 이상이면 사용자가 고른다."""
     name = re.sub(r"\s+", " ", name).strip()
     if name in roster:
-        return name
-    by_name = [r for r in roster if r.split()[0] == name.split()[0]]
-    if len(by_name) == 1 and (len(name.split()) == 1 or name.split()[1:] == by_name[0].split()[1:]):
-        return by_name[0]
-    by_saint = [r for r in roster if " ".join(r.split()[1:]) == name]
-    return by_saint[0] if len(by_saint) == 1 else None
+        return [name]
+    parts = name.split()
+    by_name = [r for r in roster if r.split()[0] == parts[0]
+               and (len(parts) == 1 or parts[1:] == r.split()[1:])]
+    if by_name:
+        return by_name
+    return [r for r in roster if " ".join(r.split()[1:]) == name]
+
+
+def match_participant(name: str, roster: list[str]) -> str | None:
+    """명단에서 한 사람으로 정해지면 그 표기, 없거나 여럿이면 None."""
+    hits = participant_candidates(name, roster)
+    return hits[0] if len(hits) == 1 else None
 
 
 def compose(out: dict, receipts: list[ReceiptExtraction], roster: list[str], year: int,
@@ -174,17 +183,20 @@ def compose(out: dict, receipts: list[ReceiptExtraction], roster: list[str], yea
             items.append(LineItem(계정과목="기타", 내용=r.품목요약 or r.상호, 단가=r.금액 or 0, 수량=1))
 
     # 경과보고 줄
-    lines, mentioned = [], set()
+    lines, mentioned, choices = [], set(), []
     for ln in out.get("경과보고_줄") or []:
         nos = [n for n in ln.get("영수증번호") or [] if n in by_no]
         dates = sorted({by_no[n].날짜 for n in nos if by_no[n].날짜})
         label = ln.get("날짜") or (md(dates[0]) if dates else "")
         people = []
         for p in ln.get("참가자") or []:
-            hit = match_participant(p, roster)
-            if hit is None:
+            hits = participant_candidates(p, roster)
+            if len(hits) > 1:
+                choices.append({"줄": f"{label} {ln['항목']}", "입력": p, "후보": hits})
+                warnings.append(f"참가자 확인 필요: '{p}' → 후보 {', '.join(hits)} ({label} {ln['항목']})")
+            elif not hits:
                 warnings.append(f"명단에 없는 참가자: '{p}' ({label} {ln['항목']})")
-            people.append(hit or p)
+            people.append(hits[0] if len(hits) == 1 else p)
         total = amount(nos)
         if ln.get("노트_언급"):
             mentioned.update(nos)
@@ -207,7 +219,7 @@ def compose(out: dict, receipts: list[ReceiptExtraction], roster: list[str], yea
     body = "\n".join([out.get("머리말") or "", *(ln.text() for ln in lines)]).strip()
     return ReportComposition(items, body, (out.get("건의사항") or "") if has_suggestion else "", lines,
                              warnings, out.get("행사명_제안"), out.get("대상월"),
-                             [c for c in out.get("사업ID_후보") or []])
+                             [c for c in out.get("사업ID_후보") or []], choices)
 
 
 # ---------------------------------------------------------------- 호출
@@ -230,17 +242,19 @@ def _request_lines(request) -> str:
     return "\n".join(f"{k}: {getattr(request, k)}" for k in keys if getattr(request, k, None) not in (None, ""))
 
 
-def ask(ledger: Ledger, request, receipts, progress_note, suggestion, client, extra: str = "") -> dict:
+def ask(ledger: Ledger, request, receipts, progress_note, suggestion, client, extra: str = ""):
     text = (f"[연결 신청서]\n{_request_lines(request)}\n\n[영수증]\n{_receipt_lines(receipts)}\n\n"
             f"[progress_note]\n{progress_note or '(없음)'}\n\n[suggestion]\n{suggestion or '(없음)'}{extra}")
-    return call_tool(client or make_client(), model_of(ledger), _system(ledger), text, SPEC, effort="high").input
+    return call(ledger, client, _system(ledger), text, SPEC, effort="high")
 
 
 def compose_report(ledger: Ledger, request, receipts: list[ReceiptExtraction], progress_note: str | None = None,
                    suggestion: str | None = None, client=None, extra: str = "") -> ReportComposition:
-    out = ask(ledger, request, receipts, progress_note, suggestion, client, extra)
-    return compose(out, receipts, ledger.settings.교사명단, ledger.settings.기본정보.회계연도,
+    result = ask(ledger, request, receipts, progress_note, suggestion, client, extra)
+    comp = compose(result.input, receipts, ledger.settings.교사명단, ledger.settings.기본정보.회계연도,
                    bool(progress_note), bool(suggestion))
+    comp.calls.append(result.info)
+    return comp
 
 
 def report_fields(request) -> dict:

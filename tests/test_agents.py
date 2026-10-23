@@ -7,13 +7,15 @@ import pytest
 from PIL import Image
 
 from agents import issue_agent, post_settlement, receipt_agent, report_agent, request_agent
-from agents.llm import FALLBACK_BETA, AgentError, AgentRefusal, call_tool
+from agents.llm import FALLBACK_BETA, KEY_PATTERN, MAX_UNION_PARAMS, AgentError, AgentRefusal, call_tool, unalias
 from agents.receipt_agent import ReceiptExtraction
 from core.models import ReportDoc
 from hwpx.fill import render
 from hwpx.reader import read_document
 from tests.conftest import TODAY
-from tests.fakes import FakeClient, text_response, tool_response
+from types import SimpleNamespace
+
+from tests.fakes import FakeClient, text_response, tool_response, usage
 
 ALL_SPECS = [request_agent.SPEC, receipt_agent.SPEC, report_agent.SPEC, issue_agent.SPEC]
 
@@ -37,19 +39,47 @@ def test_specs_are_strict(spec):
     for o in _objects(spec["input_schema"]):
         assert o["additionalProperties"] is False
         assert set(o["required"]) == set(o["properties"])
+        # API는 속성 이름으로 ^[a-zA-Z0-9_.-]{1,64}$만 받는다(한글 키 400)
+        assert all(KEY_PATTERN.match(k) for k in o["properties"]), list(o["properties"])
+    unions = sum(1 for o in _objects(spec["input_schema"]) for p in o["properties"].values()
+                 if isinstance(p.get("type"), list) or "anyOf" in p)
+    assert unions <= MAX_UNION_PARAMS, unions
+
+
+def test_aliases_round_trip():
+    payload = {"event_name": "성탄", "items": [{"account": "간식비", "unit_price": 3000}], "unknown": 1}
+    assert unalias(payload) == {"행사명": "성탄", "세부항목": [{"계정과목": "간식비", "단가": 3000}], "unknown": 1}
 
 
 def test_call_tool_request_shape_and_retry(ledger):
-    fake = FakeClient(text_response("먼저 설명드리면..."), tool_response("submit_receipt", {"x": 1}))
+    fake = FakeClient(text_response("먼저 설명드리면..."),
+                      tool_response("submit_receipt", {"x": 1}, usage=usage(1200, 80)))
     out = call_tool(fake, "claude-sonnet-5-5", "시스템", "내용", receipt_agent.SPEC)
     assert out.input == {"x": 1} and len(fake.calls) == 2
     first = fake.calls[0]
     assert first["model"] == "claude-sonnet-5-5"
     assert first["tool_choice"] == {"type": "auto"}  # Sonnet 5.5는 강제 tool_choice 불가
     assert first["tools"][0]["strict"] is True
-    assert first["betas"] == [FALLBACK_BETA] and first["fallbacks"] == "default"
+    assert "betas" not in first and "fallbacks" not in first and "_beta" not in first  # 기본: fallbacks 끔
     assert "submit_receipt" in first["system"]
     assert fake.calls[1]["messages"][-1]["role"] == "user"  # 도구 호출을 다시 요청
+    info = out.info
+    assert (info.model, info.served_by_fallback, info.attempts) == ("claude-sonnet-5-5", False, 2)
+    assert (info.input_tokens, info.output_tokens) == (1200, 80) and info.seconds >= 0
+
+
+def test_fallbacks_option_and_served_model(ledger):
+    ledger.settings.llm_fallbacks = "default"
+    it = [SimpleNamespace(type="message"), SimpleNamespace(type="fallback_message")]
+    fake = FakeClient(tool_response("submit_request_draft", _christmas_output(), model="claude-opus-4-8",
+                                    usage=usage(100, 10, it), fallback_from="claude-sonnet-5-5"))
+    d = request_agent.extract_request("x", ledger, TODAY, client=fake)
+    c = fake.calls[0]
+    assert c["_beta"] and c["betas"] == [FALLBACK_BETA] and c["fallbacks"] == "default"
+    info = d.calls[0]
+    assert (info.requested_model, info.model, info.served_by_fallback) == \
+        ("claude-sonnet-5-5", "claude-opus-4-8", True)
+    assert "대체 모델" in info.line()
 
 
 def test_call_tool_refusal_and_no_tool():
@@ -69,9 +99,9 @@ def test_model_comes_from_settings(ledger):
 
 def _christmas_output(**over):
     out = {
-        "행사명": "성탄 행사", "대상월": 12, "행사유형": "행사·교육·피정", "목적": None,
-        "시작일": "2026-12-20", "시작시각": None, "종료일": None, "종료시각": None, "박": None, "일": None,
-        "장소": None, "참가대상": "초등부 주일학교", "인원_총": 120, "인원_남": None, "인원_여": None,
+        "행사명": "성탄 행사", "대상월": 12, "행사유형": "행사·교육·피정", "목적": "",
+        "시작일": "2026-12-20", "시작시각": "", "종료일": "", "종료시각": "", "박": None, "일": None,
+        "장소": "", "참가대상": "초등부 주일학교", "인원_총": 120, "인원_남": None, "인원_여": None,
         "세부항목": [{"계정과목": "간식비", "내용": "간식", "단가": 3000, "수량": 120},
                   {"계정과목": "선물비", "내용": "선물", "단가": 5000, "수량": 120}],
         "사업ID_후보": [{"사업ID": "P10", "근거": "성탄절 행사"}, {"사업ID": "P99", "근거": "없는 사업"}],
@@ -101,7 +131,7 @@ def test_request_draft_christmas(ledger):
 
 def test_request_draft_missing_quantities(ledger):
     out = _christmas_output(세부항목=[{"계정과목": "선물비", "내용": "선물", "단가": 5000, "수량": None}],
-                            시작일=None, 대상월=None, 사업ID_후보=[])
+                            시작일="", 대상월=None, 사업ID_후보=[])
     d = request_agent.to_draft(out, ledger)
     assert d.doc.세부내역 == [] and d.doc.시작 is None
     assert {"세부항목1(선물) 수량", "시작일", "대상월", "사업ID"} <= set(d.missing)
@@ -209,7 +239,20 @@ def test_participant_matching():
     m = report_agent.match_participant
     assert m("정연재", roster) == "정연재 레오" and m("플로라", roster) == "정지연 플로라"
     assert m("사도요한", roster) is None  # 세례명이 둘이면 판단하지 않는다
-    assert m("정연재 바오로", roster) is None
+    assert report_agent.participant_candidates("사도요한", roster) == ["양준형 사도요한", "조민기 사도요한"]
+    assert m("정연재 바오로", roster) is None and report_agent.participant_candidates("정연재 바오로", roster) == []
+
+
+def test_ambiguous_participant_returns_candidates(ledger):
+    out = _report_output(경과보고_줄=[{"날짜": "8월 15일", "항목": "미사 후 식대", "영수증번호": [1, 2, 3],
+                                    "참가자": ["사도요한", "정연재"], "노트_언급": False, "노트_날짜": None,
+                                    "노트_금액": None}])
+    d = report_agent.draft_report(ledger.row(40), RECEIPTS[:3], ledger,
+                                  client=FakeClient(tool_response("submit_report_draft", out)), today=TODAY)
+    assert d.composition.참가자_선택 == [{"줄": "8월 15일 미사 후 식대", "입력": "사도요한",
+                                       "후보": ["양준형 사도요한", "조민기 사도요한"]}]
+    assert any("참가자 확인 필요: '사도요한' → 후보 양준형 사도요한, 조민기 사도요한" in w for w in d.warnings)
+    assert "참가자 : 사도요한, 정연재 레오" in d.composition.경과보고  # 고르기 전에는 입력 그대로
 
 
 # ---------------------------------------------------------------- 4. 사후정산

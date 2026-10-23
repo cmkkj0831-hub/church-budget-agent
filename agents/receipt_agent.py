@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from agents.llm import call_tool, i, image_block, jpeg_bytes, make_client, model_of, nullable, obj, s, tool
+from agents.llm import CallInfo, call, i, image_block, jpeg_bytes, make_client, nullable, obj, s, tool
 from core.models import Receipt
 from hwpx.receipts import prepare_image
 
@@ -39,6 +39,7 @@ class ReceiptExtraction:
     품목요약: str
     확인필요: bool
     확인사유: str = ""
+    call: CallInfo | None = None  # 이 영수증을 읽은 호출 기록
 
     def to_receipt(self) -> Receipt:
         return Receipt(순번=self.순번, 이미지=self.파일, 날짜=self.날짜, 상호=self.상호,
@@ -72,6 +73,8 @@ def extract_receipts(paths: list, ledger, client=None) -> list[ReceiptExtraction
     for n, path in enumerate(paths, 1):
         image = prepare_image(Path(path))
         content = [image_block(jpeg_bytes(image)), {"type": "text", "text": f"영수증 {n}번 ({Path(path).name})"}]
-        call = call_tool(client, model_of(ledger), system, content, SPEC)
-        out.append(to_extraction(n, path, call.input))
+        result = call(ledger, client, system, content, SPEC)
+        ext = to_extraction(n, path, result.input)
+        ext.call = result.info
+        out.append(ext)
     return out

@@ -74,13 +74,23 @@ def main(argv=None) -> int:
         if ok is not None:
             graded += 1
             correct += ok
+        c = r.call
         rows.append({"순번": r.순번, "파일명": name, "날짜": r.날짜 or "", "상호": r.상호,
                      "금액": "" if r.금액 is None else r.금액, "품목요약": r.품목요약,
                      "확인필요": "Y" if r.확인필요 else "", "확인사유": r.확인사유,
-                     "정답": "" if expect is None else expect, "일치": "" if ok is None else ("O" if ok else "X")})
-        print(f"{r.순번:>2}. {name:<34} {r.날짜 or '-':<10} {r.상호[:14]:<14} "
-              f"{(f'{r.금액:,}' if r.금액 is not None else '읽지 못함'):>10}  {'확인필요 ' + r.확인사유 if r.확인필요 else ''}")
+                     "정답": "" if expect is None else expect, "일치": "" if ok is None else ("O" if ok else "X"),
+                     "모델": c.model if c else "", "대체모델": "Y" if c and c.served_by_fallback else "",
+                     "초": round(c.seconds, 1) if c else "", "입력토큰": c.input_tokens if c else "",
+                     "출력토큰": c.output_tokens if c else ""})
+        print(f"{r.순번:>2}. {name:<30} {str(r.날짜 or '-'):<10} {r.상호[:14]:<14} "
+              f"{(f'{r.금액:,}' if r.금액 is not None else '읽지 못함'):>10} "
+              f"| {c.model if c else '-'} {c.seconds:.1f}초 {c.input_tokens:,}/{c.output_tokens:,}tok "
+              f"{'확인필요 ' + r.확인사유 if r.확인필요 else ''}")
 
+    calls = [r.call for r in results if r.call]
+    print(f"\n호출 {len(calls)}회, 모델 {sorted({c.model for c in calls})}, 대체 모델 {sum(c.served_by_fallback for c in calls)}회, "
+          f"총 {sum(c.seconds for c in calls):.0f}초(평균 {sum(c.seconds for c in calls) / max(1, len(calls)):.1f}초), "
+          f"토큰 입력 {sum(c.input_tokens for c in calls):,} / 출력 {sum(c.output_tokens for c in calls):,}")
     read = {r.순번: r.금액 for r in results if r.금액 is not None}
     total, expected_total = sum(read.values()), sum(REPORT_LINES.values())
     print(f"\n추출 합계 {total:,}원 / 보고서 합계 {expected_total:,}원 (차이 {total - expected_total:+,}원)")

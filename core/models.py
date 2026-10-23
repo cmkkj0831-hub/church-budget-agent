@@ -162,6 +162,7 @@ class Settings(BaseModel):
     교사명단: list[str]
     모델: str
     hwpx_row_mode: RowMode = "clone"  # 세부내역이 양식 칸보다 많을 때: clone(행 복제) | group(계정과목별 묶기)
+    llm_fallbacks: Literal["off", "default"] = "off"  # 거절 시 서버 측 대체 모델(agents/llm.py 참고). 기본 끔
 
 
 class PlanItem(BaseModel):

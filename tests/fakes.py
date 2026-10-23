@@ -2,9 +2,18 @@
 from types import SimpleNamespace
 
 
-def tool_response(name: str, payload: dict, stop_reason: str = "tool_use"):
+def tool_response(name: str, payload: dict, stop_reason: str = "tool_use", model: str = "claude-sonnet-5-5",
+                  usage=None, fallback_from: str | None = None):
     block = SimpleNamespace(type="tool_use", name=name, input=payload, id="toolu_test")
-    return SimpleNamespace(stop_reason=stop_reason, content=[block], model="claude-sonnet-5-5", usage=None)
+    content = [block]
+    if fallback_from:
+        content.insert(0, SimpleNamespace(type="fallback", **{"from": {"model": fallback_from}}, to={"model": model}))
+    return SimpleNamespace(stop_reason=stop_reason, content=content, model=model, usage=usage)
+
+
+def usage(input_tokens=0, output_tokens=0, iterations=None):
+    return SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens, cache_read_input_tokens=0,
+                           cache_creation_input_tokens=0, iterations=iterations)
 
 
 def text_response(text: str, stop_reason: str = "end_turn"):
@@ -16,7 +25,11 @@ class FakeClient:
     def __init__(self, *responses):
         self.responses = list(responses)
         self.calls: list[dict] = []
-        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._create))
+        self.messages = SimpleNamespace(create=self._create)
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._create_beta))
+
+    def _create_beta(self, **kwargs):
+        return self._create(**kwargs, _beta=True)
 
     def _create(self, **kwargs):
         self.calls.append(kwargs)
