@@ -64,10 +64,12 @@ def test_plan_total_matches_allocation(real):
         assert sum(p.월별) == p.본당예산, p.사업ID
 
 
-def test_settings_has_no_sensitive_values():
-    text = SETTINGS_JSON.read_text(encoding="utf-8")
-    for word in ("010-", "계좌", "은행", "예금주", "연락처"):
-        assert word not in text
+def test_committed_settings_has_empty_contacts():
+    """main에 커밋되는 data/settings.json의 연락처·계좌는 빈칸. 실제 값은 앱이 data 브랜치에만 저장한다."""
+    import json
+    s = json.loads(SETTINGS_JSON.read_text(encoding="utf-8"))
+    assert set(s["연락처"].values()) == {""} and set(s["계좌"].values()) == {""}
+    assert "010-" not in SETTINGS_JSON.read_text(encoding="utf-8")
 
 
 def test_issues_valid(real):

@@ -1,4 +1,4 @@
-"""암호화 설정·관리자 비밀번호, 회계연도 전환, 사용량 집계."""
+"""회계연도 전환, 사용량 집계."""
 import json
 
 import pytest
@@ -6,48 +6,8 @@ import pytest
 from core.issues import IssueBook
 from core.ledger import BlockedError, Ledger, load_settings, read_csv
 from core.models import UsagePricing
-from core.private import (
-    PrivateError, PrivateSettings, change_admin_password, check_admin, load_private, mask, new_key, save_private,
-)
 from core.usage import annual_projection, summarize
 from core.year import start_year
-
-# ---------------------------------------------------------------- 암호화·비밀번호
-
-
-def test_private_round_trip_is_encrypted(tmp_path):
-    key = new_key()
-    p = PrivateSettings()
-    p.연락처.기안자 = "010-1234-5678"
-    p.계좌.계좌번호 = "000-111-222333"
-    path = tmp_path / "settings_private.enc"
-    save_private(p, key, path)
-    raw = path.read_bytes()
-    assert b"010-1234-5678" not in raw and "1234".encode() not in raw
-    assert load_private(key, path).계좌.계좌번호 == "000-111-222333"
-    with pytest.raises(PrivateError):
-        load_private(new_key(), path)  # 다른 키
-    with pytest.raises(PrivateError):
-        save_private(p, "", path)       # 키 없음
-    assert load_private(key, tmp_path / "없음.enc") == PrivateSettings()
-
-
-def test_admin_password_precedence_and_change():
-    p = PrivateSettings()
-    assert check_admin("first-pw", p, "first-pw") == "secret"   # 최초 접속
-    assert check_admin("wrong", p, "first-pw") is None
-    with pytest.raises(PrivateError):
-        change_admin_password(p, "wrong", "new-password1", "first-pw")
-    with pytest.raises(PrivateError):
-        change_admin_password(p, "first-pw", "short", "first-pw")
-    with pytest.raises(PrivateError):
-        change_admin_password(p, "first-pw", "first-pw", "first-pw")  # 비상용과 같으면 안 됨
-    change_admin_password(p, "first-pw", "new-password1", "first-pw")
-    assert p.관리자비밀번호해시.startswith("$2") and "new-password1" not in p.관리자비밀번호해시
-    assert check_admin("new-password1", p, "first-pw") == "hash"      # 앱 비밀번호가 우선
-    assert check_admin("first-pw", p, "first-pw") == "secret"         # 비상 복구 경로
-    assert mask("3333-00-0001068") == "•" * 11 + "1068"
-
 
 # ---------------------------------------------------------------- 회계연도 전환
 

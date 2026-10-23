@@ -45,8 +45,8 @@ def test_local_new_files(data):
     ws = st.checkout()
     (ws.path / "2027").mkdir()
     (ws.path / "2027" / "ledger.csv").write_text("x", encoding="utf-8")
-    (ws.path / "settings_private.enc").write_bytes(b"\x00\x01binary")
-    assert sorted(st.commit(ws, "새 연도")) == ["2027/ledger.csv", "settings_private.enc"]
+    (ws.path / "2026/첨부.bin").write_bytes(b"\x00\x01binary")
+    assert sorted(st.commit(ws, "새 연도")) == ["2026/첨부.bin", "2027/ledger.csv"]
     assert (data / "2027" / "ledger.csv").read_text(encoding="utf-8") == "x"
 
 
@@ -134,9 +134,9 @@ def test_github_binary_and_new_file(data):
     repo = repo_from(data)
     st = GitHubStorage(repo, "main")
     ws = st.checkout()
-    (ws.path / "settings_private.enc").write_bytes(b"\xff\xfe encrypted")
-    assert st.commit(ws, "설정: 민감 설정 저장") == ["settings_private.enc"]
-    assert repo.files["data/settings_private.enc"] == b"\xff\xfe encrypted"
+    (ws.path / "2026/첨부.bin").write_bytes(b"\xff\xfe binary")
+    assert st.commit(ws, "바이너리 저장") == ["2026/첨부.bin"]
+    assert repo.files["data/2026/첨부.bin"] == b"\xff\xfe binary"
 
 
 def test_storage_from_secrets(monkeypatch, tmp_path):

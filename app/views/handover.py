@@ -7,9 +7,9 @@ import streamlit as st
 
 from core.export import export_plan_xlsx, export_xlsx
 from core.ledger import load_settings
+from core.models import AccountInfo, Contacts
 from core.paths import ROOT
 
-lib.require_admin()
 ss = st.session_state
 ws = Path(ss.ws.path)
 L, B = lib.ledger(), lib.book()
@@ -19,7 +19,7 @@ MANUAL = ROOT / "docs" / "사용설명서.md"
 tab_check, tab_pack, tab_manual = st.tabs(["체크리스트", "인수인계 패키지", "사용설명서"])
 
 ITEMS = {
-    "비밀번호": "관리자 비밀번호를 새 담당자가 정한 것으로 바꿨다(설정 › 관리자)",
+    "공유": "Streamlit 앱 공유 설정에서 새 담당자 이메일을 초대하고 이전 담당자를 제거했다(개발자에게 요청)",
     "API키": "Claude API 키 교체를 개발자에게 요청했다(새 담당자 이름으로 발급·전달)",
     "계좌": "연락처·계좌·예금주가 새 담당자 기준으로 맞다(설정 › 기본 정보·연락처)",
     "이슈": f"미해결 이슈 {len(B.open_issues())}건을 함께 검토했다(오류 관리)",
@@ -33,13 +33,13 @@ with tab_check:
         new = {k: st.checkbox(text, value=bool(done.get(k))) for k, text in ITEMS.items()}
         if st.form_submit_button("저장", type="primary"):
             settings.진행상태["인수인계"] = new
-            if lib.save_settings_and_private("인수인계: 체크리스트 갱신", settings):
+            if lib.save_settings("인수인계: 체크리스트 갱신", settings):
                 st.rerun()
     n = sum(bool(v) for v in done.values())
     st.progress(n / len(ITEMS), text=f"{n}/{len(ITEMS)} 완료")
 
 with tab_pack:
-    st.markdown("다음 담당자에게 넘길 자료를 한 파일로 받습니다. 연락처·계좌 같은 민감값은 들어가지 않습니다.")
+    st.markdown("다음 담당자에게 넘길 자료를 한 파일로 받습니다. 설정의 연락처·계좌는 빼고 넣습니다.")
     if st.button("인수인계 패키지 만들기", type="primary"):
         files = {}
         with tempfile.TemporaryDirectory() as d:
@@ -50,7 +50,8 @@ with tab_pack:
             p = ws / str(L.year) / name
             if p.exists():
                 files[f"{L.year}/{name}"] = p.read_bytes()
-        files["settings.json(민감값 제외).json"] = (ws / "settings.json").read_bytes()
+        shared = load_settings(ws).model_copy(update={"연락처": Contacts(), "계좌": AccountInfo()})
+        files["settings(연락처·계좌 제외).json"] = shared.model_dump_json(indent=2).encode("utf-8")
         for doc in (MANUAL, MANUAL.with_name("회계담당_접속안내.md")):
             if doc.exists():
                 files[doc.name] = doc.read_bytes()

@@ -7,7 +7,6 @@ from datetime import date, datetime
 import pytest
 
 from core.models import AccountInfo, LineItem, ReportDoc, RequestDoc
-from core.secrets import apply_secrets
 from core.paths import TEMPLATES_DIR
 from hwpx.fill import REPORT_CELLS, REQUEST_CELLS, REPORT_TEMPLATE, REQUEST_TEMPLATE, render, render_committed
 from hwpx.layout import SENSITIVE
@@ -111,16 +110,19 @@ def test_post_settlement_files(ledger, tmp_path):
     assert rep[REPORT_CELLS["작성일"]] == req[REQUEST_CELLS["작성일"]] == [" 2026년 10월 24일"]
 
 
-def test_apply_secrets_priority():
-    """계좌 칸별: doc.계좌_override > secrets 계좌_문서별 > 문서에 적힌 값 > secrets 기본."""
-    secrets = {"연락처": {"기안자": "010-0000-0000"},
-               "계좌": {"은행명": "기본은행", "계좌번호": "000-0", "예금주": "기본예금주"},
-               "계좌_문서별": {"(예)2026-024": {"예금주": "문서별예금주"}}}
-    out = apply_secrets(CHILDRENS_REQUEST, secrets)
-    assert (out.기안자연락처, out.은행명, out.계좌번호, out.예금주) == \
-        ("010-0000-0000", "기본은행", "000-0", "문서별예금주")
-    doc = CHILDRENS_REQUEST.model_copy(update={"은행명": "문서은행",
-                                               "계좌_override": AccountInfo(예금주="덮어쓰기", 계좌번호="")})
-    out = apply_secrets(doc, secrets)
-    assert (out.은행명, out.계좌번호, out.예금주) == ("문서은행", "000-0", "덮어쓰기")
+def test_fill_contacts_from_settings(ledger, tmp_path):
+    """연락처 = 설정, 계좌 칸별 = 문서별 덮어쓰기(빈 칸 제외) > 설정. 설정이 비면 문서도 빈칸."""
+    s = ledger.settings.model_copy(deep=True)
+    s.연락처.기안자 = "010-0000-0000"
+    s.계좌 = AccountInfo(은행명="기본은행", 계좌번호="000-0", 예금주="기본예금주")
+    out = s.fill_contacts(CHILDRENS_REQUEST)
+    assert (out.기안자연락처, out.기안단체장연락처, out.은행명, out.계좌번호, out.예금주) == \
+        ("010-0000-0000", "", "기본은행", "000-0", "기본예금주")
+    doc = CHILDRENS_REQUEST.model_copy(update={"계좌_override": AccountInfo(예금주="덮어쓰기", 계좌번호="")})
+    out = s.fill_contacts(doc)
+    assert (out.은행명, out.계좌번호, out.예금주) == ("기본은행", "000-0", "덮어쓰기")
     assert CHILDRENS_REQUEST.기안자연락처 == ""  # 원본은 그대로
+    cells = read_cells(render(out, tmp_path / "c.hwpx"))
+    assert cells[REQUEST_CELLS["예금주"]][0].strip() == "덮어쓰기"
+    blank = ledger.settings.model_copy(deep=True).fill_contacts(doc)  # 설정 비어 있음
+    assert (blank.기안자연락처, blank.은행명, blank.계좌번호, blank.예금주) == ("", "", "", "덮어쓰기")

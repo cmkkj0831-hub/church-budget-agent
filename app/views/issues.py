@@ -17,7 +17,6 @@ from hwpx.reader import UnknownFormError, read_document
 
 from core.changes import units  # noqa: E402
 
-lib.require_admin()
 L, B = lib.ledger(), lib.book()
 ss = st.session_state
 st.title("⚠️ 오류 관리")

@@ -1,30 +1,21 @@
-"""⚙️ 설정(회계담당): 기본 정보·기안자·연락처·계좌(암호화)·교사명단, 금액 기준, 문서 양식, Claude 모델·토큰 단가,
-관리자 비밀번호, API 키 상태."""
+"""⚙️ 설정: 기본 정보·기안자·연락처·계좌·교사명단(모두 settings.json), 금액 기준, 문서 양식, Claude 모델·토큰 단가,
+API 키 상태."""
 import forms
 import lib
 import streamlit as st
 
 from core.models import Settings
 
-lib.require_admin()
 L = lib.ledger()
 s = L.settings
 st.title("⚙️ 설정")
-if st.session_state.get("private_error"):
-    st.error(f"민감 설정을 읽지 못했습니다: {st.session_state.private_error}")
-elif lib.needs_setup():
-    st.info("처음 접속하셨습니다. 아래 순서로 설정해 주세요.\n\n"
-            "1. **관리자** 탭에서 내 비밀번호로 바꾸기\n"
-            "2. **기본 정보·연락처** 탭에서 [연락처·계좌 보기]를 켜고 연락처·계좌를 넣은 뒤 저장\n"
-            "3. 왼쪽 **인수인계**에서 체크리스트 확인")
 
-tab_basic, tab_rules, tab_ai, tab_admin = st.tabs(["기본 정보·연락처", "금액·문서 양식", "Claude 모델·사용량 단가", "관리자"])
+tab_basic, tab_rules, tab_ai = st.tabs(["기본 정보·연락처", "금액·문서 양식", "Claude 모델·API 키"])
 
 with tab_basic:
-    out = forms.basic_form(s, lib.private(), "set")
-    if out:
-        data, private = out
-        if lib.save_settings_and_private("설정: 기본 정보·연락처 수정", Settings(**data), private):
+    data = forms.basic_form(s, "set")
+    if data:
+        if lib.save_settings("설정: 기본 정보·연락처 수정", Settings(**data)):
             st.success("저장했습니다.")
 
 with tab_rules:
@@ -54,7 +45,7 @@ with tab_rules:
                                    결재란=[x.strip() for x in 결재란.split(",") if x.strip()])
             data["hwpx_row_mode"] = row_mode
             data["연도별"][str(L.year)].update(예산배정액=int(배정액), 다음문서번호=int(다음))
-            if lib.save_settings_and_private("설정: 금액·문서 양식 수정", Settings(**data)):
+            if lib.save_settings("설정: 금액·문서 양식 수정", Settings(**data)):
                 st.success("저장했습니다.")
 
 with tab_ai:
@@ -73,10 +64,7 @@ with tab_ai:
             data = s.model_dump()
             data.update(모델=모델.strip(), llm_fallbacks=fallbacks,
                         사용량단가={"입력_USD_1M": 입력, "출력_USD_1M": 출력, "환율_KRW_USD": 환율})
-            if lib.save_settings_and_private("설정: 모델·사용량 단가 수정", Settings(**data)):
+            if lib.save_settings("설정: 모델·사용량 단가 수정", Settings(**data)):
                 st.success("저장했습니다.")
-
-with tab_admin:
-    forms.password_form("set")
     st.divider()
     forms.api_key_status()

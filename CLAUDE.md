@@ -4,23 +4,23 @@
 
 ## 운영 방식 (2026-10-23 변경)
 
-- **운영 주체**: 회계담당 1인(ADMIN)이 모든 권한을 가진다. 회계담당은 매년 바뀌고 인수인계한다.
-  개발자는 운영에 관여하지 않으며 개발자 전용 화면은 없다(WRITER 개념 삭제).
+- **운영 주체**: 회계담당 1인이 모든 기능을 쓴다. 회계담당은 매년 바뀌고 인수인계한다.
+  개발자는 운영에 관여하지 않으며 개발자 전용 화면은 없다.
   새 담당자가 개발자 없이 앱만으로 한 해를 시작할 수 있어야 한다(회계연도 전환 마법사, 인수인계, docs/사용설명서.md).
-  예외: Anthropic API 키 — 회계담당이 개발자에게 전달하면 개발자가 Streamlit Cloud Secrets에서 교체한다.
-- **권한**: ADMIN = 모든 기능. VIEWER(선택) = 대시보드 보기와 엑셀 다운로드만(사용량 탭 제외).
-  secrets에 VIEWER_PASSWORD가 없으면 VIEWER 로그인은 숨긴다.
-- **비밀값**
-  - secrets: ANTHROPIC_API_KEY, GITHUB_TOKEN, GITHUB_REPO, DATA_BRANCH, SETTINGS_KEY(Fernet 키),
-    ADMIN_PASSWORD(최초 접속·비상 복구), VIEWER_PASSWORD(선택), APP_ENV(dev|prod)
-  - data/settings_private.enc(Fernet 암호화, 앱에서 ADMIN이 편집): 관리자 비밀번호 bcrypt 해시(설정되면 ADMIN_PASSWORD보다
-    우선 — ADMIN_PASSWORD로 로그인하면 '비상 복구'로 보고 새 비밀번호를 정하라고 안내), 연락처, 은행명·계좌번호·예금주, 문서별 계좌
-  - API 키는 앱에서 입력·저장하지 않는다. 설정 화면에는 상태만(설정됨/없음, 끝 4자리, 마지막 호출 성공 시각)
+  예외: Anthropic API 키 교체와 Streamlit 앱 공유 설정(초대·제거)은 개발자가 한다.
+- **보안 기능 없음 (2026-10-23 결정)**: 앱 로그인·비밀번호·역할(ADMIN/VIEWER)·암호화(SETTINGS_KEY)는 모두 삭제했다.
+  앱에 들어오면 모든 기능을 쓴다. 접근 제한은 코드가 아니라 **Streamlit 앱 공유 설정('초대한 사람만')**과
+  **GitHub 비공개 저장소**로 한다(README 배포 절차의 필수 항목). 다시 로그인·암호화를 넣지 않는다.
+- **비밀값(secrets)**: ANTHROPIC_API_KEY, GITHUB_TOKEN, GITHUB_REPO, DATA_BRANCH, APP_ENV(dev|prod)만.
+  API 키는 앱에서 입력·저장하지 않는다. 설정 화면에는 상태만(설정됨/없음, 끝 4자리, 마지막 호출 성공 시각)
+- **연락처·계좌**: 기안자·기안단체장 연락처, 은행명·계좌번호·예금주는 data/settings.json(`연락처`, `계좌`)에 평문으로 두고
+  설정 화면에서 일반 입력칸으로 고친다. 신청서·보고서 생성 때 자동으로 채우고(`Settings.fill_contacts`), 문서별로 계좌를
+  덮어쓸 수 있다(`계좌_override`, 문서에만 들어가고 설정·장부에는 남지 않음). 설정이 비어 있으면 문서도 빈칸.
 - **검토자 부재 대비**: 모든 장부 반영 전 변경 전후 비교 + 확인 체크박스. 반영 단위로 [되돌리기](장부·이슈 함께 복원,
   되돌리기 자체도 이력에 기록, 이후 같은 칸이 바뀌었으면 거부) — `core.changes`
 - **데이터는 연도별**: data/{연도}/ledger.csv·plan.csv·plan_info.csv·issues.csv·history.csv·usage.csv,
-  data/settings.json(현재 회계연도 `기본정보.회계연도`, 연도별 배정액·다음 번호·마감은 `연도별`, 민감값 제외),
-  data/settings_private.enc. 지난 연도(`연도별[연도].마감`)는 읽기 전용.
+  data/settings.json(현재 회계연도 `기본정보.회계연도`, 연도별 배정액·다음 번호·마감은 `연도별`, 연락처·계좌).
+  지난 연도(`연도별[연도].마감`)는 읽기 전용.
 - **LLM 사용량**: 모든 호출을 data/{연도}/usage.csv에 기록(시각, 기능, 모델, 요청모델, 대체모델, 입력·출력 토큰, 소요초, APP_ENV).
   토큰 단가·환율은 설정(`사용량단가`)에서 입력하고 코드에 고정하지 않는다.
 
@@ -35,10 +35,10 @@
 
 ```
 app/        Streamlit 멀티페이지 앱 (streamlit run app/Home.py)
-  Home.py     로그인(ADMIN/VIEWER) → 권한별 st.navigation(VIEWER: 대시보드만), 상단 회계연도·이슈 배지
-  lib.py      공통: 저장소·세션 상태(연도별), persist(반영 이력 기록 + 커밋, 충돌 처리), undo, 민감 설정(암호화),
+  Home.py     st.navigation(모든 화면, 로그인 없음), 상단 회계연도·이슈 배지
+  lib.py      공통: 저장소·세션 상태(연도별), persist(반영 이력 기록 + 커밋, 충돌 처리), undo, save_settings,
               LLM 사용량 기록 훅, 문서 생성, 문서별 계좌 덮어쓰기, 다운로드 안내, 장부 변화 요약, topbar
-  forms.py    설정·연도 전환 공용 입력(기본 정보·연락처·계좌·교사명단, 비밀번호 변경, API 키 상태)
+  forms.py    설정·연도 전환 공용 입력(기본 정보·연락처·계좌·교사명단, API 키 상태)
   views/      request(📝) report(🧾) post_settlement(🔁) issues(⚠️, 이력·되돌리기·재검사) dashboard(📊, 연도 선택·사용량)
               settings(⚙️) year(🗓️ 회계연도 전환 마법사) handover(📋 인수인계)
 core/       장부·이슈·계산 엔진 (순수 Python, UI·LLM 의존성 없음)
@@ -51,13 +51,12 @@ core/       장부·이슈·계산 엔진 (순수 Python, UI·LLM 의존성 없�
               apply_resolution — 장부 정정과 이력 기록의 유일한 경로
   export.py   장부+이슈 → 회계내역 xlsx (python -m core.export → out/)
   migrate.py  2026 엑셀 → data/ 1회 이관 (python -m core.migrate). --force는 이슈 처리·이력을 지우므로 쓰지 않는다
-  secrets.py  .streamlit/secrets.toml 읽기, apply_secrets(연락처·계좌 채움, 계좌 우선순위 아래 참고)
+  secrets.py  .streamlit/secrets.toml 읽기(앱 밖 에이전트·스크립트용 API 키)
   storage.py  저장 계층: 세션별 data/ 전체 작업 사본(Workspace, 상대 경로) → commit(바뀐·새 파일). LocalStorage(내용 해시)·
               GitHubStorage(PyGithub, 파일 sha, 한 커밋, 바이너리는 blob), 받은 뒤 원본이 바뀌었으면 ConflictError.
               secrets에 GITHUB_TOKEN이 있으면 GitHub 모드(GITHUB_REPO, DATA_BRANCH 기본 "data")
   changes.py  반영 단위 이력(record_unit: snapshot 대비 장부 칸·행 추가/삭제·이슈 추가/필드 변경을 같은 이력ID로)과
               되돌리기(undo_unit), units(반영 목록)
-  private.py  settings_private.enc(Fernet) 읽기·쓰기, 관리자 비밀번호(bcrypt) 확인·변경, mask
   usage.py    usage.csv 기록·집계(월·기능·환경), 예상 비용·연간 예상(단가는 설정)
   plan_io.py  사업계획서 xlsx 읽기(2026 형식, 천원/원), 검증(월별 배분 합 = 본당예산, 배정액), plan.csv 쓰기
   year.py     회계연도 전환: close_year(마감), start_year(새 연도 폴더·빈 장부·이월 이슈·설정 전환)
@@ -81,12 +80,11 @@ agents/     Claude API 호출(정보 추출·문장 작성만. 계산·검증은
   issue_agent.py      이슈 + 사용자 설명 + 첨부 hwpx → 해결 제안(정정/설명/추가 확인 필요), 장부 복사본에 적용해 검증
   plan_agent.py       사업계획서 사진 → 사업 행(금액은 적힌 그대로 + 단위, 원 환산·검증은 코드)
 scripts/    eval_extraction.py(8월 신앙학교 영수증 추출 ↔ 보고서 금액 비교, 실제 API 호출)
-            gen_settings_key.py(SETTINGS_KEY 생성 + 분실 경고), check_cloud.py(secrets·GitHub 읽기/임시 브랜치 쓰기·복호화·
-            Claude 1회·hwpx 왕복·xlsx 점검 표, 비밀값 출력 없음, 운영 브랜치는 읽기만)
+            check_cloud.py(secrets·GitHub 읽기/임시 브랜치 쓰기·설정(연락처·계좌 채움 여부)·Claude 1회·hwpx 왕복·xlsx
+            점검 표, 비밀값·계좌·연락처 출력 없음, 운영 브랜치는 읽기만)
 data/       장부와 설정(커밋 대상)
   settings.json        현재 회계연도, 기본·기안·금액·문서 기준, 연도별(배정액·다음 번호·마감), 교사명단, 모델, 사용량단가,
-                       진행상태(연도 전환·인수인계) — 민감값 없음
-  settings_private.enc 민감값(Fernet 암호화, 앱에서 처음 저장할 때 생김)
+                       진행상태(연도 전환·인수인계), 연락처·계좌(평문 — main에서는 빈칸, 실제 값은 data 브랜치)
   {연도}/ledger.csv    문서 1건 = 1행. 비고 열 없음
   {연도}/plan.csv      사업계획(원 단위), 1월~12월 배분 / plan_info.csv 개요·비고
   {연도}/issues.csv    이슈 / history.csv 반영 단위 이력(이력ID 같은 행 = 한 반영) / usage.csv LLM 사용량
@@ -135,8 +133,8 @@ out/        생성 결과물 — 커밋 금지
 - 파일명: `{월내순번}_{행사명}_{신청서|보고서}.hwpx`
 - 세부내역이 양식 7행을 넘으면 settings `hwpx_row_mode`: `clone`(기본, 마지막 빈 행 복제 — 표가 한 쪽을 넘으면 다음 쪽으로)
   | `group`(같은 계정과목의 뒤쪽 항목을 "내용 외 N건"으로 묶어 7행에 맞춤, 금액 합산·단가·수량 비움, 많은 계정과목부터 필요한 만큼만)
-- 계좌(은행명·계좌번호·예금주)는 칸별로 `문서.계좌_override` > secrets `[계좌_문서별."문서번호"]` > 문서에 적힌 값 > secrets `[계좌]` 순.
-  예금주가 문서마다 다를 수 있다(5단계 UI에서 계좌_override로 입력).
+- 계좌(은행명·계좌번호·예금주)는 칸별로 `문서.계좌_override`(빈 칸 제외) > 설정 `계좌` 순. 연락처는 설정 `연락처`.
+  예금주가 문서마다 다를 수 있다(생성 화면 '이 문서만 다른 계좌 쓰기').
 - 금액·누계·번호 계산은 반드시 코드가 한다. LLM은 정보 추출과 문장 작성만 한다.
   - LLM 출력에는 금액 합계를 받지 않는다: 신청서는 단가·수량만, 보고서는 영수증 번호 묶음만 받고 금액은 코드가 더한다.
   - 경과보고 한 줄 형식 "M월 D일 항목 : 금액원 / 참가자 : 이름 세례명, …"은 코드가 만든다. 참가자는 교사명단과 매칭(명단에 없으면 경고).
@@ -172,13 +170,13 @@ out/        생성 결과물 — 커밋 금지
 
 ## 보안 규칙
 
-- 연락처·계좌번호, 영수증 이미지, `2026년/` 원본 문서, `templates/examples/`, `out/`, `.streamlit/secrets.toml`은 커밋하지 않는다(.gitignore 등록).
-- 민감값(연락처, 은행명, 계좌번호, 예금주)은 settings.json에 넣지 않는다. `data/settings_private.enc`(Fernet, 키는 secrets
-  `SETTINGS_KEY`)에 암호화해 두고 앱 설정 화면에서 고친다(`secrets.toml.example` 참고).
+- 영수증 이미지, `2026년/` 원본 문서, `templates/examples/`, `out/`, `.streamlit/secrets.toml`은 커밋하지 않는다(.gitignore 등록).
+- 연락처·계좌 실제 값은 앱이 data 브랜치의 data/settings.json에만 커밋한다. main의 data/settings.json에서는 빈칸으로 둔다
+  (tests/test_data.py가 확인). 로컬에서 값을 넣었다면 main에 커밋하지 않는다.
+- 저장소는 비공개, Streamlit 앱 공유는 '초대한 사람만'. 담당자가 바뀌면 새 담당자 초대·이전 담당자 제거.
 - 커밋 전 `git status`로 확인한다.
 - 브랜치: 앱 코드는 `main`(Streamlit Cloud 배포 브랜치), 장부는 `data` 브랜치에 앱이 커밋한다(배포 브랜치에 push가 생기면
   앱이 재시작되므로 분리). 배포 후 장부 원본은 `data` 브랜치 — main의 data/는 배포 시점 사본이며 두 브랜치를 merge하지 않는다.
-  `data/settings_private.enc`는 암호화 파일이라 data 브랜치에 커밋된다.
 - 운영 데이터(data 브랜치, 로컬 data/2026)로 시험하지 않는다. 시험은 사본(BUDGET_DATA_DIR) 또는 임시 브랜치(check_cloud.py).
 
 ## 진행 상황
@@ -221,6 +219,6 @@ out/        생성 결과물 — 커밋 금지
   - 테스트: tests/test_app.py(AppTest 시나리오, FakeClient), tests/test_storage.py(로컬·GitHub 대역)
 - [ ] 6단계 (진행 중) Streamlit Community Cloud 배포 — 저장소 cmkkj0831-hub/church-budget-agent(비공개)
   - 버전 고정(requirements.txt, Python 3.13), .streamlit/config.toml, DATA_BRANCH 기본 "data"
-  - 첫 접속(settings_private.enc 없음·비어 있음·복호화 실패)이면 ADMIN은 설정 화면에서 시작(Home.py `default`)
-  - 복호화 실패 상태에서는 민감 설정 저장을 막는다(빈 값으로 덮어쓰기 방지, `lib.save_settings_and_private`)
+  - 저장소 cmkkj0831-hub/church-budget-agent(비공개)에 main·data push 완료(2026-10-23)
+  - 보안 기능 전부 삭제(로그인·비밀번호·VIEWER·SETTINGS_KEY·암호화 → 앱 공유 설정으로 대체), 연락처·계좌는 settings.json 평문
   - 문서: README.md(개발자), docs/사용설명서.md(첫날 가이드·자주 하는 실수 추가), docs/회계담당_접속안내.md

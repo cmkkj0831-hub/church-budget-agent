@@ -8,15 +8,12 @@ from PIL import Image
 from streamlit.testing.v1 import AppTest
 
 from core.issues import IssueBook
-from core.ledger import Ledger, load_settings, read_csv
+from core.ledger import Ledger, load_settings, read_csv, save_settings
 from core.paths import DATA_DIR, ROOT
-from core.private import load_private, new_key
 from tests.fakes import FakeClient, tool_response
 
 APP = str(ROOT / "app" / "Home.py")
 TODAY = date(2026, 11, 2)
-KEY = new_key()
-ADMIN_PW, VIEWER_PW = "admin-first", "viewer-pw"
 
 
 @pytest.fixture
@@ -27,20 +24,14 @@ def data(tmp_path, monkeypatch):
     return d
 
 
-def start(password: str, client=None, viewer: bool = True) -> AppTest:
+def start(client=None) -> AppTest:
+    """앱에는 로그인이 없다(접근 제한은 Streamlit 공유 설정). 열면 대시보드."""
     at = AppTest.from_file(APP, default_timeout=60)
-    at.secrets["ADMIN_PASSWORD"] = ADMIN_PW
-    if viewer:
-        at.secrets["VIEWER_PASSWORD"] = VIEWER_PW
-    at.secrets["SETTINGS_KEY"] = KEY
     at.secrets["APP_ENV"] = "dev"
     at.session_state["_today"] = TODAY
     if client is not None:
         at.session_state["_llm_client"] = client
     at.run()
-    assert not at.exception, [e.message for e in at.exception]
-    at.text_input[0].input(password)
-    at.button[0].click().run()
     assert not at.exception, [e.message for e in at.exception]
     return at
 
@@ -66,100 +57,51 @@ def go(at, page):
     return run_ok(at)
 
 
-# ---------------------------------------------------------------- 로그인·권한
+# ---------------------------------------------------------------- 화면·설정
 
-def test_admin_sees_everything_with_topbar(data):
-    at = start(ADMIN_PW)
-    assert at.session_state["role"] == "ADMIN"
+def test_all_pages_open_without_login(data):
+    at = start()
+    assert at.title[0].value.startswith("📊") and not any("비밀번호" in t.label for t in at.text_input)
     top = " ".join(m.value for m in at.markdown)
     assert "2026 회계연도" in top and "문서 오류" in top and "예산 경고" in top and "증빙 누락·미확인" in top
-    assert any("최초" in w.value for w in at.warning)  # secrets 비밀번호 → 새 비밀번호 안내
+    assert [t.label for t in at.tabs] == ["회계 현황", "사업계획서", "사용량"]
+    assert not at.warning or not any("비밀번호" in w.value for w in at.warning)
     for page in ("views/request.py", "views/report.py", "views/post_settlement.py", "views/issues.py",
                  "views/settings.py", "views/year.py", "views/handover.py"):
         go(at, page)
     go(at, "views/dashboard.py")
-    assert [t.label for t in at.tabs][:3] == ["회계 현황", "사업계획서", "사용량"]
 
 
-def test_viewer_sees_dashboard_only(data):
-    at = start(VIEWER_PW)
-    assert at.session_state["role"] == "VIEWER"
-    assert at.title[0].value.startswith("📊")
-    assert [t.label for t in at.tabs] == ["회계 현황", "사업계획서"]  # 사용량 탭 없음
-    assert at.get("download_button")  # 엑셀 다운로드는 가능
-    for page in ("views/settings.py", "views/request.py", "views/issues.py", "views/year.py", "views/handover.py"):
-        with pytest.raises(ValueError):  # VIEWER에게는 다른 화면이 등록되지 않는다
-            at.switch_page(page)
+def test_contacts_saved_plain_and_filled_into_documents(data, monkeypatch):
+    import hwpx.fill
+    rendered = []
+    real = hwpx.fill.render
+    monkeypatch.setattr(hwpx.fill, "render", lambda doc, *a, **k: rendered.append(doc) or real(doc, *a, **k))
 
-
-def test_viewer_login_hidden_without_password(data):
-    at = AppTest.from_file(APP, default_timeout=60)
-    at.secrets["ADMIN_PASSWORD"] = ADMIN_PW
-    at.secrets["SETTINGS_KEY"] = KEY
-    at.run()
-    assert not any("열람용" in c.value for c in at.caption)
-    at.text_input[0].input(VIEWER_PW)
-    at.button[0].click().run()
-    assert any("맞지 않" in e.value for e in at.error)
-
-
-def test_password_change_and_private_settings(data):
-    at = go(start(ADMIN_PW), "views/settings.py")
-    assert not any(t.label == "계좌번호" for t in at.text_input)  # [보기] 전에는 가려짐
-    next(t for t in at.toggle if t.key == "set_show").set_value(True)
-    run_ok(at)
-    next(t for t in at.text_input if t.label == "계좌번호").input("3333-00-1234567")
-    next(t for t in at.text_input if t.label == "예금주").input("홍길동")
+    at = go(start(FakeClient(tool_response("submit_request_draft", CHRISTMAS))), "views/settings.py")
+    values = {"기안자 연락처": "010-0000-0001", "기안단체장 연락처": "010-0000-0002",
+              "은행명": "테스트은행", "계좌번호": "000-00-0000001", "예금주": "홍길동"}
+    for label, v in values.items():
+        next(t for t in at.text_input if t.label == label).input(v)
     next(b for b in at.button if b.label == "저장").click()
     run_ok(at)
-    enc = (data / "settings_private.enc").read_bytes()
-    assert b"1234567" not in enc
-    assert load_private(KEY, data / "settings_private.enc").계좌.계좌번호 == "3333-00-1234567"
-    assert "1234567" not in (data / "settings.json").read_text(encoding="utf-8")
+    s = load_settings(data)
+    assert (s.연락처.기안자, s.계좌.계좌번호, s.계좌.예금주) == ("010-0000-0001", "000-00-0000001", "홍길동")
+    assert not (data / "settings_private.enc").exists()
 
-    labels = ("현재 비밀번호", "새 비밀번호(8자 이상)", "새 비밀번호 확인")
-    fields = {t.label: t for t in at.text_input if t.label in labels and t.key is None or t.label in labels}
-    fields["현재 비밀번호"].input(ADMIN_PW)
-    fields["새 비밀번호(8자 이상)"].input("new-secret-9")
-    fields["새 비밀번호 확인"].input("new-secret-9")
-    button(at, "비밀번호 변경").click()
+    go(at, "views/request.py")
+    at.text_area(key="req_text").input("12월 20일 성탄 행사")
     run_ok(at)
-    assert any("바꿨습니다" in s.value for s in at.success)
-    again = start("new-secret-9")
-    assert again.session_state["role"] == "ADMIN" and not again.session_state["recovery"]
-    assert start(ADMIN_PW).session_state["recovery"]  # 비상 복구 경로
-
-
-def test_first_login_starts_at_settings_until_private_saved(data):
-    at = start(ADMIN_PW)
-    assert at.title[0].value.startswith("⚙️") and any("처음 접속" in i.value for i in at.info)
-    next(t for t in at.toggle if t.key == "set_show").set_value(True)
+    button(at, "초안 만들기").click()
     run_ok(at)
-    next(t for t in at.text_input if t.label == "기안자 연락처").input("010-0000-0000")
-    next(b for b in at.button if b.label == "저장").click()
+    at.text_input(key="req_holder").input("다른예금주")  # 이 문서만 예금주 덮어쓰기
     run_ok(at)
-    assert start(ADMIN_PW).title[0].value.startswith("📊")  # 저장 뒤에는 대시보드부터
-
-
-def test_wrong_settings_key_never_overwrites_private(data):
-    at = go(start(ADMIN_PW), "views/settings.py")
-    next(t for t in at.toggle if t.key == "set_show").set_value(True)
-    run_ok(at)
-    next(t for t in at.text_input if t.label == "예금주").input("홍길동")
-    next(b for b in at.button if b.label == "저장").click()
-    run_ok(at)
-    before = (data / "settings_private.enc").read_bytes()
-    at = AppTest.from_file(APP, default_timeout=60)
-    at.secrets["ADMIN_PASSWORD"] = ADMIN_PW
-    at.secrets["SETTINGS_KEY"] = new_key()  # 다른 키
-    run_ok(at)
-    at.text_input[0].input(ADMIN_PW)
-    at.button[0].click().run()
-    assert at.title[0].value.startswith("⚙️") and any("읽지 못했습니다" in e.value for e in at.error)
-    next(b for b in at.button if b.label == "저장").click()
-    run_ok(at)
-    assert any("저장하지 않았습니다" in e.value for e in at.error)
-    assert (data / "settings_private.enc").read_bytes() == before
+    confirm_and_click(at, "req_confirm", "req_accept", "신청서 생성·장부 반영")
+    doc = rendered[-1]
+    assert (doc.기안자연락처, doc.기안단체장연락처, doc.은행명, doc.계좌번호, doc.예금주) == \
+        ("010-0000-0001", "010-0000-0002", "테스트은행", "000-00-0000001", "다른예금주")
+    assert "다른예금주" not in (data / "settings.json").read_text(encoding="utf-8")  # 덮어쓰기는 문서에만
+    assert "010-0000-0001" not in (data / "2026" / "ledger.csv").read_text(encoding="utf-8-sig")
 
 
 # ---------------------------------------------------------------- 신청 → 보고 → 사후정산 → 대시보드
@@ -210,7 +152,7 @@ def test_request_report_post_settlement_flow(data):
     fake = FakeClient(tool_response("submit_request_draft", CHRISTMAS),
                       receipt("편의점", 300_000), receipt("문구점", 450_000), report_out([1, 2]),
                       receipt("제과점", 200_000, "2026-11-01"), report_out([1], 11, "11월 교리 간식"))
-    at = start(ADMIN_PW, fake)
+    at = start(fake)
 
     go(at, "views/request.py")
     at.text_area(key="req_text").input("12월 20일 성탄 행사, 어린이 120명, 간식 3000원씩, 선물 5000원씩")
@@ -276,7 +218,7 @@ PLAN = {"해결유형": "설명", "변경안": [{"순번": 38, "열": "상태", 
 
 
 def test_issue_resolve_then_undo(data):
-    at = go(start(ADMIN_PW, FakeClient(tool_response("submit_issue_assessment", PLAN))), "views/issues.py")
+    at = go(start(FakeClient(tool_response("submit_issue_assessment", PLAN))), "views/issues.py")
     at.selectbox(key="iss_id").select("I-019")
     run_ok(at)
     at.text_area(key="iss_text_I-019").input("부서 운영비는 철회됐어. 지급받지 않았어.")
@@ -310,7 +252,7 @@ def test_rescan_registers_selected(data):
     L = Ledger.load(data)
     L.row(53).합계 = None  # 새 이상: 합계란 공란
     L.save()
-    at = go(start(ADMIN_PW), "views/issues.py")
+    at = go(start(), "views/issues.py")
     button(at, "장부 재검사").click()
     run_ok(at)
     at.session_state["iss_scan_table"] = {"edited_rows": {0: {"등록": True}}, "added_rows": [], "deleted_rows": []}
@@ -324,7 +266,7 @@ def test_rescan_registers_selected(data):
 # ---------------------------------------------------------------- 2027 회계연도 전환 마법사
 
 def test_year_wizard(data):
-    at = go(start(ADMIN_PW), "views/year.py")
+    at = go(start(), "views/year.py")
     button(at, "전환 시작").click()
     run_ok(at)
     assert at.get("download_button")  # ① 연간 결산
@@ -370,9 +312,18 @@ def test_year_wizard(data):
 
 
 def test_handover_package(data):
-    at = go(start(ADMIN_PW), "views/handover.py")
+    import json
+    import zipfile
+    s = load_settings(data)
+    s.계좌.계좌번호, s.연락처.기안자 = "000-00-0000009", "010-0000-0009"
+    save_settings(s, data)
+    at = go(start(), "views/handover.py")
+    assert any("공유 설정" in c.label and "이전 담당자를 제거" in c.label for c in at.checkbox)
+    assert not any("비밀번호" in c.label for c in at.checkbox)
     button(at, "인수인계 패키지 만들기").click()
     run_ok(at)
     files = at.session_state["handover_files"]
-    assert "사용설명서.md" in files and "회계담당_접속안내.md" in files and "2026_회계내역.xlsx" in files and "settings.json(민감값 제외).json" in files
-    assert not any(f.endswith(".enc") for f in files)
+    assert {"사용설명서.md", "회계담당_접속안내.md", "2026_회계내역.xlsx", "settings(연락처·계좌 제외).json"} <= set(files)
+    with zipfile.ZipFile(io.BytesIO(at.session_state["handover_zip"])) as z:
+        shared = json.loads(z.read("settings(연락처·계좌 제외).json"))
+    assert shared["계좌"]["계좌번호"] == shared["연락처"]["기안자"] == "" and shared["교사명단"]

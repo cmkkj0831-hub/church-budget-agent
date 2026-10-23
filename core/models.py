@@ -25,7 +25,7 @@ class LineItem(BaseModel):
 
 
 class AccountInfo(BaseModel):
-    """계좌 정보. 민감값이라 장부·설정에 저장하지 않는다."""
+    """계좌 정보(설정 기본 계좌 또는 문서별 덮어쓰기). 장부에는 저장하지 않는다."""
     은행명: str = ""
     계좌번호: str = ""
     예금주: str = ""
@@ -45,7 +45,7 @@ class DocBase(BaseModel):
     협조단체: str = ""
     기안자: str = ""
     기안단체장: str = ""
-    기안자연락처: str = ""        # secrets에서 채움, 저장하지 않음
+    기안자연락처: str = ""        # 설정(연락처)에서 채움, 장부에 저장하지 않음
     기안단체장연락처: str = ""
     목적: str = ""
     시작: datetime | None = None
@@ -53,7 +53,7 @@ class DocBase(BaseModel):
     박: int | None = None
     일: int | None = None
     장소: str = ""
-    은행명: str = ""              # secrets에서 채움, 저장하지 않음
+    은행명: str = ""              # 설정(계좌)에서 채움, 장부에 저장하지 않음
     계좌번호: str = ""
     예금주: str = ""
     계좌_override: AccountInfo | None = None  # 문서별 계좌(예: 예금주가 다른 부서 운영비). 빈 칸은 무시
@@ -144,6 +144,11 @@ class DrafterInfo(BaseModel):
     기안단체장: str
 
 
+class Contacts(BaseModel):
+    기안자: str = ""
+    기안단체장: str = ""
+
+
 class DocRules(BaseModel):
     운영비단가: int
     교사수: int
@@ -171,6 +176,8 @@ class UsagePricing(BaseModel):
 class Settings(BaseModel):
     기본정보: BasicInfo  # 기본정보.회계연도 = 현재 회계연도
     기안정보: DrafterInfo
+    연락처: Contacts = Field(default_factory=Contacts)    # 문서의 기안자·기안단체장 연락처(평문)
+    계좌: AccountInfo = Field(default_factory=AccountInfo)  # 문서의 기본 계좌(평문)
     금액문서기준: DocRules
     교사명단: list[str]
     모델: str
@@ -186,6 +193,15 @@ class Settings(BaseModel):
 
     def year_info(self, year: int) -> YearInfo:
         return self.연도별[str(year)]
+
+    def fill_contacts(self, doc):
+        """문서에 연락처·계좌를 채운 사본. 연락처 = 설정값, 계좌 칸별 = doc.계좌_override(빈 칸 제외) > 설정값.
+        설정이 비어 있으면 문서도 빈칸."""
+        override = doc.계좌_override.model_dump() if doc.계좌_override else {}
+        update = {"기안자연락처": self.연락처.기안자, "기안단체장연락처": self.연락처.기안단체장}
+        for key in ("은행명", "계좌번호", "예금주"):
+            update[key] = override.get(key) or getattr(self.계좌, key)
+        return doc.model_copy(update=update)
 
 
 class PlanItem(BaseModel):
@@ -215,7 +231,7 @@ class Issue(BaseModel):
     첨부: str = ""
     처리자: str = ""
     처리일: date | None = None
-    검토메모: str = ""  # VIEWER(회계담당)가 남긴 설명 — WRITER 화면에 '검토 대기'로 표시
+    검토메모: str = ""  # 회계담당이 확인 중에 남긴 메모(상태 '확인중')
 
     @property
     def 검토대기(self) -> bool:

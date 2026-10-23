@@ -1,5 +1,6 @@
-"""앱 공통: 로그인·권한(ADMIN/VIEWER), 저장소·세션 상태(연도별), 반영(이력 기록 + 커밋), 되돌리기,
-민감 설정(암호화), LLM 사용량 기록, 문서 생성, 다운로드 안내, 장부 변화 요약, 상단 배지."""
+"""앱 공통: 저장소·세션 상태(연도별), 반영(이력 기록 + 커밋), 되돌리기, 설정 저장, LLM 사용량 기록,
+문서 생성(설정의 연락처·계좌 채움), 다운로드 안내, 장부 변화 요약, 상단 배지.
+접근 제한은 코드가 아니라 Streamlit Cloud 앱 공유 설정('초대한 사람만')으로 한다."""
 import io
 import sys
 import tempfile
@@ -16,19 +17,17 @@ import streamlit as st  # noqa: E402
 from agents.llm import set_usage_hook  # noqa: E402
 from core.changes import record_unit, snapshot, undo_unit  # noqa: E402
 from core.issues import IssueBook, cumulative_reconciliation, issue_color  # noqa: E402
-from core.ledger import Ledger, load_settings, read_csv, save_settings  # noqa: E402
+from core.ledger import Ledger, load_settings, read_csv  # noqa: E402
+from core.ledger import save_settings as save_settings_file  # noqa: E402
 from core.paths import DATA_DIR  # noqa: E402
-from core.private import PrivateError, PrivateSettings, check_admin, load_private, save_private  # noqa: E402
-from core.secrets import apply_secrets  # noqa: E402
 from core.storage import ConflictError, storage_from_secrets  # noqa: E402
 from core.usage import append_usage, usage_row  # noqa: E402
 
-ADMIN, VIEWER = "ADMIN", "VIEWER"
 HANDLER = "회계담당"
 DOC_ERROR_TYPES = ("계산 불일치", "누계 누락", "기재 오류", "문서 누락", "번호 중복")
 
 
-# ---------------------------------------------------------------- secrets·로그인
+# ---------------------------------------------------------------- secrets
 
 def secrets() -> dict:
     try:
@@ -39,47 +38,6 @@ def secrets() -> dict:
 
 def app_env() -> str:
     return secrets().get("APP_ENV", "dev")
-
-
-def role() -> str | None:
-    return st.session_state.get("role")
-
-
-def is_admin() -> bool:
-    return role() == ADMIN
-
-
-def login() -> None:
-    s = secrets()
-    load()
-    private = st.session_state.private
-    if not (s.get("ADMIN_PASSWORD") or private.관리자비밀번호해시):
-        st.error("Streamlit secrets에 ADMIN_PASSWORD(최초 접속용)를 설정하세요.")
-        st.stop()
-    st.title("성당 초등부 교사회 예산 관리")
-    with st.form("login"):
-        pw = st.text_input("비밀번호", type="password")
-        if s.get("VIEWER_PASSWORD"):
-            st.caption("열람용 비밀번호로 로그인하면 대시보드만 볼 수 있습니다.")
-        if st.form_submit_button("로그인", type="primary"):
-            how = check_admin(pw, private, s.get("ADMIN_PASSWORD", ""))
-            if how:
-                st.session_state.role = ADMIN
-                st.session_state.recovery = how == "secret" and bool(private.관리자비밀번호해시)
-                st.session_state.first_login = how == "secret" and not private.관리자비밀번호해시
-            elif s.get("VIEWER_PASSWORD") and pw == s["VIEWER_PASSWORD"]:
-                st.session_state.role = VIEWER
-            else:
-                st.error("비밀번호가 맞지 않습니다.")
-                st.stop()
-            st.rerun()
-    st.stop()
-
-
-def require_admin() -> None:
-    if not is_admin():
-        st.warning("회계담당(관리자)만 쓸 수 있는 화면입니다.")
-        st.stop()
 
 
 def require_writable() -> None:
@@ -97,10 +55,6 @@ def storage():
     return st.session_state._storage
 
 
-def settings_key() -> str:
-    return secrets().get("SETTINGS_KEY", "")
-
-
 def load(force: bool = False, year: int | None = None) -> None:
     ss = st.session_state
     if force or "ws" not in ss:
@@ -116,20 +70,7 @@ def load(force: bool = False, year: int | None = None) -> None:
         info = ss.ws.path / str(y) / "plan_info.csv"
         ss.plan_info = read_csv(info) if info.exists() else []
         ss.base = snapshot(ss.ledger, ss.book)
-        try:
-            ss.private = load_private(settings_key(), ss.ws.path / "settings_private.enc")
-            ss.private_error = ""
-        except PrivateError as e:
-            ss.private, ss.private_error = PrivateSettings(), str(e)
     set_usage_hook(_record_usage)
-
-
-def needs_setup() -> bool:
-    """첫 접속: 민감 설정 파일이 없거나 비어 있으면(비밀번호·연락처·계좌 모두 없음) 설정부터 하도록 안내."""
-    load()
-    ss = st.session_state
-    return bool(ss.private_error) or not (ss.ws.path / "settings_private.enc").exists() \
-        or ss.private == PrivateSettings()
 
 
 def ledger() -> Ledger:
@@ -145,11 +86,6 @@ def book() -> IssueBook:
 def plan_info() -> list[dict]:
     load()
     return st.session_state.plan_info
-
-
-def private() -> PrivateSettings:
-    load()
-    return st.session_state.private
 
 
 def _commit(message: str) -> list[str] | None:
@@ -187,17 +123,10 @@ def undo(unit: str) -> str | None:
     return new
 
 
-def save_settings_and_private(message: str, settings=None, private_settings=None) -> bool:
-    """설정(settings.json)과 민감 설정(settings_private.enc, 암호화)을 저장·커밋."""
+def save_settings(message: str, settings) -> bool:
+    """설정(settings.json, 연락처·계좌 포함)을 저장·커밋."""
     ss = st.session_state
-    if private_settings is not None and ss.get("private_error"):
-        # 키가 틀려 못 읽은 상태에서 저장하면 기존 암호화 설정을 빈 값으로 덮어쓴다
-        st.error("민감 설정을 읽지 못해 저장하지 않았습니다. secrets의 SETTINGS_KEY를 확인하세요.")
-        return False
-    if settings is not None:
-        save_settings(settings, ss.ws.path)
-    if private_settings is not None:
-        save_private(private_settings, settings_key(), ss.ws.path / "settings_private.enc")
+    save_settings_file(settings, ss.ws.path)
     if _commit(message) is None:
         return False
     load(force=True)
@@ -237,7 +166,7 @@ def llm_client():
 def render_hwpx(doc) -> bytes:
     from hwpx.fill import render
     with tempfile.TemporaryDirectory() as d:
-        filled = apply_secrets(doc, private().secrets_view())
+        filled = ledger().settings.fill_contacts(doc)
         return render(filled, Path(d) / "doc.hwpx", ledger().settings.hwpx_row_mode).read_bytes()
 
 
@@ -279,7 +208,9 @@ def account_override(prefix: str):
     """문서별 계좌 덮어쓰기 입력(예금주가 다를 때). 비우면 설정값."""
     from core.models import AccountInfo
     with st.expander("이 문서만 다른 계좌 쓰기(예금주가 다를 때)"):
-        st.caption("비워 두면 설정의 기본 계좌를 씁니다. 입력값은 문서에만 들어가고 장부·저장소에 남지 않습니다.")
+        s = ledger().settings.계좌
+        st.caption(f"비워 두면 설정의 기본 계좌를 씁니다(현재: {s.은행명 or '은행 없음'} {s.계좌번호 or '계좌 없음'} "
+                   f"{s.예금주 or '예금주 없음'}). 입력값은 이 문서에만 들어가고 장부·설정에는 남지 않습니다.")
         a, b, c = st.columns(3)
         a.text_input("은행명", key=f"{prefix}_bank")
         b.text_input("계좌번호", key=f"{prefix}_account")
@@ -337,7 +268,7 @@ def findings_box(findings) -> tuple[list, list]:
 
 
 def topbar() -> None:
-    """로그인 후 상단: 현재 회계연도 + 미해결 이슈 배지(문서 오류 빨강, 예산 경고 주황, 증빙 누락·미확인 회색)."""
+    """상단: 현재 회계연도 + 미해결 이슈 배지(문서 오류 빨강, 예산 경고 주황, 증빙 누락·미확인 회색)."""
     L, B = ledger(), book()
     open_issues = B.open_issues()
     groups = [("문서 오류", [i for i in open_issues if i.유형 in DOC_ERROR_TYPES], "C00000"),
@@ -348,8 +279,6 @@ def topbar() -> None:
         f"{label} {len(items)}</span>" for label, items, c in groups if items)
     state = " · 🔒 읽기 전용" if L.read_only else ""
     st.markdown(f"**{L.year} 회계연도**{state} &nbsp; {badges or '미해결 이슈 없음'}", unsafe_allow_html=True)
-    if st.session_state.get("recovery") or st.session_state.get("first_login"):
-        st.warning("비상용(또는 최초) 비밀번호로 로그인했습니다. 설정에서 관리자 비밀번호를 새로 정하세요.")
 
 
 def unreported_requests():

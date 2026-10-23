@@ -1,5 +1,5 @@
 """🗓️ 회계연도 전환(회계담당): 단계형 마법사. 진행 상태는 settings.json `진행상태.연도전환`에 저장해 이어서 할 수 있다.
-① 지난해 마감 ② 미해결 이슈 이월 ③ 새 사업계획서 ④ 배정액·새 장부 ⑤ 기본 정보·연락처 ⑥ 비밀번호·API 키."""
+① 지난해 마감 ② 미해결 이슈 이월 ③ 새 사업계획서 ④ 배정액·새 장부 ⑤ 기본 정보·연락처·계좌 ⑥ API 키·앱 공유 확인."""
 import tempfile
 from pathlib import Path
 
@@ -18,14 +18,13 @@ from core.plan_io import MONTHS, PLAN_COLUMNS, parse_plan_xlsx, plan_problems
 from core.usage import load_usage
 from core.year import start_year
 
-lib.require_admin()
 ss = st.session_state
 ws = Path(ss.ws.path)
 settings = load_settings(ws)
 state = settings.진행상태.get("연도전환") or {}
 st.title("🗓️ 회계연도 전환")
 
-STEPS = ["지난해 마감", "미해결 이슈 이월", "새 사업계획서", "배정액·새 장부", "기본 정보·연락처", "비밀번호·API 키"]
+STEPS = ["지난해 마감", "미해결 이슈 이월", "새 사업계획서", "배정액·새 장부", "기본 정보·연락처", "API 키·앱 공유"]
 
 
 def save_state(new_state: dict | None, message: str, settings_obj: Settings | None = None) -> None:
@@ -34,7 +33,7 @@ def save_state(new_state: dict | None, message: str, settings_obj: Settings | No
         s.진행상태.pop("연도전환", None)
     else:
         s.진행상태["연도전환"] = new_state
-    if lib.save_settings_and_private(message, s):
+    if lib.save_settings(message, s):
         st.rerun()
 
 
@@ -191,22 +190,20 @@ elif step == 4:
 elif step == 5:
     st.subheader("⑤ 기본 정보·기안자·연락처·계좌·교사명단 갱신")
     s = load_settings(ws)
-    out = forms.basic_form(s, lib.private(), "yr")
-    if out:
-        data, private = out
+    data = forms.basic_form(s, "yr")
+    if data:
         new_settings = Settings(**data)
         new_settings.진행상태["연도전환"] = state | {"단계": 6}
-        if lib.save_settings_and_private(f"연도전환: {new} 기본 정보 갱신", new_settings, private):
+        if lib.save_settings(f"연도전환: {new} 기본 정보 갱신", new_settings):
             st.rerun()
     if st.button("바꿀 것 없음 — 다음"):
         save_state(state | {"단계": 6}, "연도전환: 기본 정보 유지")
 
-# ---------------------------------------------------------------- ⑥ 비밀번호·API 키
+# ---------------------------------------------------------------- ⑥ API 키·앱 공유
 elif step == 6:
-    st.subheader("⑥ 관리자 비밀번호와 API 키")
-    st.markdown("담당자가 바뀌었다면 관리자 비밀번호를 새로 정하세요.")
-    forms.password_form("yr")
-    st.divider()
+    st.subheader("⑥ API 키와 앱 공유 확인")
     forms.api_key_status()
+    st.markdown("담당자가 바뀌었다면 Streamlit 앱 공유 설정(Settings › Sharing)에서 **새 담당자 이메일을 초대하고 "
+                "이전 담당자를 제거**하세요(개발자에게 요청). 이 앱에는 계좌·연락처가 저장되어 있습니다.")
     if st.button("회계연도 전환 마치기", type="primary"):
         save_state(None, f"연도전환: {new} 완료")

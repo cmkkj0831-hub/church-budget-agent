@@ -1,7 +1,7 @@
 """장부 저장 계층. 앱은 세션마다 data/ 전체의 작업 사본(Workspace)을 받아 읽고 고친 뒤,
 commit으로 바뀐(또는 새로 생긴) 파일만 되돌려 쓴다. 받은 뒤 원본이 바뀌었으면(다른 곳에서 먼저 저장) ConflictError.
 
-data/ 구조: settings.json, settings_private.enc(암호화), {연도}/ledger.csv·plan.csv·plan_info.csv·issues.csv·
+data/ 구조: settings.json, {연도}/ledger.csv·plan.csv·plan_info.csv·issues.csv·
 history.csv·usage.csv. 파일은 data/ 기준 상대 경로(예: "2026/ledger.csv")로 다룬다.
 
 - LocalStorage: data/ 파일을 직접 읽고 쓴다(충돌 판정은 내용 해시).
@@ -152,7 +152,7 @@ class GitHubStorage(Storage):
             data = (ws.path / n).read_bytes()
             try:
                 elements.append(InputGitTreeElement(self.prefix + n, "100644", "blob", content=data.decode("utf-8")))
-            except UnicodeDecodeError:  # 암호화 파일 등 바이너리
+            except UnicodeDecodeError:  # 이미지 등 바이너리
                 blob = self.repo.create_git_blob(__import__("base64").b64encode(data).decode(), "base64")
                 elements.append(InputGitTreeElement(self.prefix + n, "100644", "blob", sha=blob.sha))
         tree = self.repo.create_git_tree(elements, parent.tree)

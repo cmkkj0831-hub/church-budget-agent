@@ -10,7 +10,6 @@ from core.ledger import BlockedError
 from core.issues import commit_with_issues
 from core.models import ReportDoc
 
-lib.require_admin()
 lib.require_writable()
 L = lib.ledger()
 ss = st.session_state

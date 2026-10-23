@@ -9,7 +9,6 @@ TEMPLATES_DIR = ROOT / "templates"
 OUT_DIR = ROOT / "out"
 
 SETTINGS_JSON = DATA_DIR / "settings.json"           # 현재 회계연도 포함, 민감값 제외
-PRIVATE_ENC = DATA_DIR / "settings_private.enc"      # 민감값(Fernet 암호화)
 YEAR_FILES = ("ledger.csv", "plan.csv", "plan_info.csv", "issues.csv", "history.csv", "usage.csv")
 
 

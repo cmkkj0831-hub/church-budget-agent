@@ -4,9 +4,9 @@ secrets(기본 .streamlit/secrets.toml, 같은 이름의 환경변수가 우선)
 비밀값은 출력하지 않는다. 운영 데이터(DATA_BRANCH)는 읽기만 하고, 쓰기 시험은 임시 브랜치에서 한 뒤 지운다.
 
   1. GitHub: 저장소·DATA_BRANCH 읽기(장부 행 수 등), 임시 브랜치 쓰기·삭제
-  2. SETTINGS_KEY: settings_private.enc 복호화(없으면 임시 파일로 암호화 왕복만)
+  2. 설정: settings.json 읽기, 연락처·계좌 칸이 채워졌는지(값은 출력하지 않음)
   3. Claude API 1회 호출(모델명·토큰)
-  4. hwpx 생성·읽기 왕복, 연간 결산 xlsx 내보내기
+  4. hwpx 생성·읽기 왕복(설정의 연락처·계좌가 문서에 들어가는지 포함), 연간 결산 xlsx 내보내기
 """
 import argparse
 import os
@@ -22,11 +22,9 @@ sys.path.insert(0, str(ROOT))
 from core.issues import IssueBook  # noqa: E402
 from core.ledger import Ledger, load_settings, read_csv  # noqa: E402
 from core.paths import DATA_DIR  # noqa: E402
-from core.private import PrivateError, PrivateSettings, load_private, save_private  # noqa: E402
 from core.secrets import SECRETS_TOML, load_secrets  # noqa: E402
 
-KEYS = ("ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GITHUB_REPO", "DATA_BRANCH", "SETTINGS_KEY", "ADMIN_PASSWORD",
-        "VIEWER_PASSWORD", "APP_ENV")
+KEYS = ("ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GITHUB_REPO", "DATA_BRANCH", "APP_ENV")
 rows: list[tuple[str, str, str]] = []
 
 
@@ -57,8 +55,8 @@ def load(path: Path) -> dict:
 
 
 def secrets_status(s: dict) -> None:
-    """필수: API 키·SETTINGS_KEY·ADMIN_PASSWORD·APP_ENV. GITHUB_TOKEN이 있으면(클라우드) GITHUB_REPO·DATA_BRANCH도."""
-    required = ["ANTHROPIC_API_KEY", "SETTINGS_KEY", "ADMIN_PASSWORD", "APP_ENV"]
+    """필수: API 키·APP_ENV. GITHUB_TOKEN이 있으면(클라우드) GITHUB_REPO·DATA_BRANCH도."""
+    required = ["ANTHROPIC_API_KEY", "APP_ENV"]
     if s.get("GITHUB_TOKEN"):
         required += ["GITHUB_REPO", "DATA_BRANCH"]
     have = [k for k in KEYS if s.get(k)]
@@ -84,15 +82,14 @@ def github_read(s: dict) -> Path | None:
     if branch == repo.default_branch:
         notes.append(f"⚠️ DATA_BRANCH가 배포 브랜치({branch})와 같음 → 저장할 때마다 앱이 재시작됨")
     if not repo.private:
-        notes.append("⚠️ 공개 저장소 — 교사명단·장부가 공개됨. 비공개로 바꾸세요")
+        notes.append("⚠️ 공개 저장소 — 계좌·연락처·교사명단·장부가 공개됨. 비공개로 바꾸세요")
     ws = GitHubStorage(repo, branch).checkout()
     settings = load_settings(ws.path)
     y = settings.현재연도
     L = Ledger.load(ws.path, y)
-    enc = "있음" if (ws.path / "settings_private.enc").exists() else "없음"
     record("GitHub 읽기", not notes,
            f"{repo.full_name}@{branch}: 파일 {len(ws.content)}개, {y}년 장부 {len(L.rows)}행, "
-           f"다음 문서번호 {L.next_doc_number()}, settings_private.enc {enc}" + (" / " + " / ".join(notes) if notes else ""))
+           f"다음 문서번호 {L.next_doc_number()}" + (" / " + " / ".join(notes) if notes else ""))
     return ws.path
 
 
@@ -120,31 +117,14 @@ def github_write(s: dict) -> None:
     record("GitHub 쓰기·삭제", ok and gone, f"임시 브랜치 {name}에 커밋 {'성공' if ok else '실패'}, 삭제 {'완료' if gone else '안 됨'}")
 
 
-@step("SETTINGS_KEY")
-def settings_key(s: dict, data_dir: Path) -> None:
-    key = s.get("SETTINGS_KEY", "")
-    if not key:
-        record("SETTINGS_KEY", False, "없음 — scripts/gen_settings_key.py로 만드세요")
-        return
-    enc = data_dir / "settings_private.enc"
-    if enc.exists():
-        try:
-            p = load_private(key, enc)
-        except PrivateError as e:
-            record("SETTINGS_KEY", False, f"복호화 실패({e}) — 키가 바뀌었거나 다른 배포의 파일")
-            return
-        filled = [n for n, v in (("비밀번호 해시", p.관리자비밀번호해시), ("기안자 연락처", p.연락처.기안자),
-                                 ("기안단체장 연락처", p.연락처.기안단체장), ("은행명", p.계좌.은행명),
-                                 ("계좌번호", p.계좌.계좌번호), ("예금주", p.계좌.예금주)) if v]
-        record("SETTINGS_KEY", True, f"settings_private.enc 복호화 성공, 채워진 칸: {', '.join(filled) or '없음'}")
-        return
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "settings_private.enc"
-        p = PrivateSettings()
-        p.계좌.예금주 = "점검"
-        save_private(p, key, path)
-        ok = load_private(key, path).계좌.예금주 == "점검" and b"\xec\xa0\x90" not in path.read_bytes()
-    record("SETTINGS_KEY", ok, "settings_private.enc 없음(첫 접속 전) → 임시 파일 암호화 왕복 성공")
+@step("설정")
+def settings_check(data_dir: Path) -> None:
+    s = load_settings(data_dir)
+    fields = (("기안자 연락처", s.연락처.기안자), ("기안단체장 연락처", s.연락처.기안단체장), ("은행명", s.계좌.은행명),
+              ("계좌번호", s.계좌.계좌번호), ("예금주", s.계좌.예금주))
+    empty = [n for n, v in fields if not v]
+    record("설정", True, f"settings.json 읽음({s.현재연도} 회계연도). "
+           + (f"비어 있는 칸: {', '.join(empty)} — 문서에서도 빈칸" if empty else "연락처·계좌 모두 채워짐"))
 
 
 @step("Claude API")
@@ -171,13 +151,14 @@ def hwpx_round_trip(data_dir: Path) -> None:
     draft = RequestDoc(월=12, 사업ID=next(iter(L.plan)), 행사명="점검용 문서", 작성일=date(y, 12, 1),
                        시작=datetime(y, 12, 1, 10), 종료=datetime(y, 12, 1, 12), 장소="점검", 목적="점검",
                        세부내역=[LineItem(계정과목="점검", 내용="항목", 단가=1_000, 수량=3)])
-    doc = L.build_request(draft, today=date(y, 12, 1)).docs[0]
+    doc = L.settings.fill_contacts(L.build_request(draft, today=date(y, 12, 1)).docs[0])
     with tempfile.TemporaryDirectory() as d:
         res = read_document(render(doc, Path(d) / "check.hwpx"), 사업ID=doc.사업ID)
     back = res.doc
-    ok = (back.행사명, back.합계, back.신청누계액, back.문서번호) == (doc.행사명, doc.합계, doc.신청누계액, doc.문서번호)
+    keys = ("행사명", "합계", "신청누계액", "문서번호", "기안자연락처", "기안단체장연락처", "은행명", "계좌번호", "예금주")
+    ok = all(getattr(back, k) == getattr(doc, k) for k in keys)
     record("hwpx 왕복", ok and not res.failures,
-           f"{doc.문서번호} 합계 {doc.합계:,}원 생성·읽기 {'일치' if ok else '불일치'}"
+           f"{doc.문서번호} 합계 {doc.합계:,}원·연락처·계좌 생성·읽기 {'일치' if ok else '불일치'}"
            + (f", 못 읽은 칸 {res.failures}" if res.failures else ""))
 
 
@@ -215,7 +196,7 @@ def main() -> int:
     data_dir = remote or Path(os.environ.get("BUDGET_DATA_DIR") or s.get("DATA_DIR") or DATA_DIR)
     if remote is None:
         record("데이터 위치", True, f"로컬 {data_dir}")
-    settings_key(s, data_dir)
+    settings_check(data_dir)
     if a.skip_claude:
         record("Claude API", None, "--skip-claude")
     else:

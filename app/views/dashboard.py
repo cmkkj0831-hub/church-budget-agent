@@ -1,5 +1,5 @@
-"""📊 대시보드(회계담당·열람): 연도 선택(지난 연도 읽기 전용), 회계 현황(KPI·누계 두 기준·차트·장부 표·xlsx),
-사업계획서(집행률·연말 예상·월별 배분·개요·xlsx), 사용량(회계담당만: 월별·기능별·환경별, 예상 비용)."""
+"""📊 대시보드: 연도 선택(지난 연도 읽기 전용), 회계 현황(KPI·누계 두 기준·차트·장부 표·xlsx),
+사업계획서(집행률·연말 예상·월별 배분·개요·xlsx), 사용량(월별·기능별·환경별, 예상 비용)."""
 import io
 import tempfile
 from pathlib import Path
@@ -27,15 +27,12 @@ st.title(f"📊 {year} 초등부 교사회 회계 대시보드")
 open_issues = B.open_issues()
 c1, c2 = st.columns([1, 4])
 with c1:
-    if lib.is_admin():
-        st.page_link(st.session_state._pages["issues"], label=f"미해결 이슈 {len(open_issues)}건 →", icon="⚠️")
-    else:
-        st.markdown(f"⚠️ 미해결 이슈 {len(open_issues)}건")
+    st.page_link(st.session_state._pages["issues"], label=f"미해결 이슈 {len(open_issues)}건 →", icon="⚠️")
 budget_warn = [i for i in open_issues if i.유형 == "예산 경고"]
 if budget_warn:
     c2.warning("예산 경고: " + " / ".join(i.설명 for i in budget_warn))
 
-tabs = st.tabs(["회계 현황", "사업계획서"] + (["사용량"] if lib.is_admin() else []))
+tabs = st.tabs(["회계 현황", "사업계획서", "사용량"])
 tab_acc, tab_plan = tabs[0], tabs[1]
 
 # ================================================================ 회계 현황
@@ -131,31 +128,30 @@ with tab_plan:
     st.download_button("사업계획서 xlsx 다운로드", data, file_name=f"{year}_사업계획서_집행현황.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-# ================================================================ 사용량(회계담당만)
-if lib.is_admin():
-    with tabs[2]:
-        pricing = L.settings.사용량단가
-        rows = load_usage(Path(ss.ws.path) / str(year) / "usage.csv")
-        if not (pricing.입력_USD_1M or pricing.출력_USD_1M) or not pricing.환율_KRW_USD:
-            st.info("설정 › 토큰 단가·환율을 입력하면 예상 비용이 계산됩니다(단가는 코드에 고정하지 않습니다).")
-        if not rows:
-            st.caption("아직 Claude 호출 기록이 없습니다.")
-        else:
-            summary = pd.DataFrame(summarize(rows, pricing))
-            envs = st.multiselect("환경", sorted(summary["환경"].unique()), default=sorted(summary["환경"].unique()))
-            view = summary[summary["환경"].isin(envs)]
-            k = st.columns(4)
-            proj = annual_projection(rows, pricing, "prod")
-            k[0].metric("호출 수", int(view["호출"].sum()))
-            k[1].metric("토큰(입력/출력)", f"{int(view['입력토큰'].sum()):,} / {int(view['출력토큰'].sum()):,}")
-            k[2].metric("예상 비용(선택 환경)", lib.won(int(view["예상비용_원"].sum())))
-            k[3].metric("연간 예상(운영 prod)", lib.won(proj["연간 예상(원)"]),
-                        f"{proj['사용한 달']}개월 평균 {proj['월평균(원)']:,}원", delta_color="off")
-            st.markdown("**월별·기능별**")
-            st.dataframe(view, hide_index=True, width="stretch")
-            by_month = view.groupby("월")[["예상비용_원"]].sum()
-            st.bar_chart(by_month)
-            buf = io.StringIO()
-            view.to_csv(buf, index=False)
-            st.download_button("예산 신청 근거용 사용량 CSV", ("\ufeff" + buf.getvalue()).encode("utf-8"),
-                               file_name=f"{year}_Claude_사용량.csv", mime="text/csv")
+# ================================================================ 사용량
+with tabs[2]:
+    pricing = L.settings.사용량단가
+    rows = load_usage(Path(ss.ws.path) / str(year) / "usage.csv")
+    if not (pricing.입력_USD_1M or pricing.출력_USD_1M) or not pricing.환율_KRW_USD:
+        st.info("설정 › 토큰 단가·환율을 입력하면 예상 비용이 계산됩니다(단가는 코드에 고정하지 않습니다).")
+    if not rows:
+        st.caption("아직 Claude 호출 기록이 없습니다.")
+    else:
+        summary = pd.DataFrame(summarize(rows, pricing))
+        envs = st.multiselect("환경", sorted(summary["환경"].unique()), default=sorted(summary["환경"].unique()))
+        view = summary[summary["환경"].isin(envs)]
+        k = st.columns(4)
+        proj = annual_projection(rows, pricing, "prod")
+        k[0].metric("호출 수", int(view["호출"].sum()))
+        k[1].metric("토큰(입력/출력)", f"{int(view['입력토큰'].sum()):,} / {int(view['출력토큰'].sum()):,}")
+        k[2].metric("예상 비용(선택 환경)", lib.won(int(view["예상비용_원"].sum())))
+        k[3].metric("연간 예상(운영 prod)", lib.won(proj["연간 예상(원)"]),
+                    f"{proj['사용한 달']}개월 평균 {proj['월평균(원)']:,}원", delta_color="off")
+        st.markdown("**월별·기능별**")
+        st.dataframe(view, hide_index=True, width="stretch")
+        by_month = view.groupby("월")[["예상비용_원"]].sum()
+        st.bar_chart(by_month)
+        buf = io.StringIO()
+        view.to_csv(buf, index=False)
+        st.download_button("예산 신청 근거용 사용량 CSV", ("\ufeff" + buf.getvalue()).encode("utf-8"),
+                           file_name=f"{year}_Claude_사용량.csv", mime="text/csv")
