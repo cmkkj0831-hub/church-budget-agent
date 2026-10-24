@@ -270,6 +270,28 @@ def test_issue_resolve_then_undo(data):
     assert B.history[-1].사유 == f"되돌리기: {unit}"
 
 
+def test_event_fields_in_step1_and_kept_over_draft(data):
+    fake = FakeClient(tool_response("submit_request_draft", CHRISTMAS))
+    at = start(fake)
+    for page, prefix in (("views/report.py", "rep"), ("views/post_settlement.py", "ps"), ("views/request.py", "req")):
+        go(at, page)  # 초안·영수증 전에도 1단계에 행사 정보 칸이 있다
+        assert at.date_input(key=f"{prefix}_시작일").value is None
+        assert at.text_input(key=f"{prefix}_장소") and at.number_input(key=f"{prefix}_인원_총")
+
+    at.text_area(key="req_text").input("12월 20일 성탄 행사, 어린이 120명")
+    at.number_input(key="req_인원_총").set_value(100)  # Claude는 120이라고 하지만 직접 적은 값이 우선
+    at.text_input(key="req_장소").input("성당 마당")
+    run_ok(at)
+    button(at, "초안 만들기").click()
+    run_ok(at)
+    prompt = fake.prompt()
+    assert "[행사 정보 입력칸" in prompt and "인원_총: 100" in prompt and "장소: 성당 마당" in prompt
+    assert at.number_input(key="req_인원_총").value == 100 and at.text_input(key="req_장소").value == "성당 마당"
+    assert at.date_input(key="req_시작일").value == date(2026, 12, 20)  # 비어 있던 칸은 초안으로 채움
+    assert at.number_input(key="req_인원_남").value == 60
+    assert len([d for d in at.date_input if d.key == "req_시작일"]) == 1  # 2단계에 같은 칸이 또 있지 않다
+
+
 def test_delete_document_then_undo(data):
     at = go(start(FakeClient(tool_response("submit_request_draft", CHRISTMAS))), "views/request.py")
     at.text_area(key="req_text").input("12월 20일 성탄 행사")

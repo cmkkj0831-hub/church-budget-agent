@@ -1,4 +1,5 @@
-"""🔁 사후 정산: 사업 선택 → 영수증·경과보고 → 보고서 확정 → 한도 적용 신청서 역생성 → 한 번에 생성."""
+"""🔁 사후 정산: 사업·영수증·경과보고·행사 정보(일시·장소·참가대상·인원) → 보고서 확정 → 한도 적용 신청서 역생성 →
+한 번에 생성. 행사 정보는 신청서·보고서 모두에 들어가고, 날짜를 비워 두면 영수증 날짜로 채운다."""
 import lib
 import pandas as pd
 import streamlit as st
@@ -48,20 +49,26 @@ with st.container(border=True):
     c.text_input("행사명", key="ps_name", placeholder=f"예: {lib.today().month}월 {L.plan[pid].사업명}")
     lib.uploader("영수증 이미지·PDF (여러 장)", "ps_files", ["jpg", "jpeg", "png", "heic", "pdf"])
     st.text_area("경과보고(자연어)", key="ps_note", height=100)
-    st.caption("위에서 고른 사업·대상 월·행사명을 Claude에 함께 알려 경과보고를 씁니다. 바꿨다면 초안을 다시 만드세요.")
+    event_box = st.container()  # 행사 정보(영수증을 읽은 뒤 빈 날짜를 채울 수 있게 버튼 처리 뒤에 그린다)
+    st.caption("위에서 고른 사업·대상 월·행사명과 행사 정보를 Claude에 함께 알려 경과보고를 씁니다. 바꿨다면 초안을 다시 만드세요.")
     if st.button("영수증 읽고 보고서 초안 만들기", type="primary", disabled=not ss.get("ps_files")):
         try:
             with st.spinner("영수증을 읽는 중…"):
                 ss.ps_receipts = extract_receipts(lib.save_uploads("ps_files"), L, client=lib.llm_client())
+                first, last = lib.receipt_span(ss.ps_receipts)
+                lib.fill_event_blanks("ps", {"시작일": first, "종료일": last})
             with st.spinner("보고서 초안을 쓰는 중…"):
                 context = context_lines(L, pid, int(ss.ps_month), (ss.get("ps_name") or "").strip())
-                answer = report_agent.ask(L, None, ss.ps_receipts, ss.ps_note, None, lib.llm_client(), NOTE,
-                                          context=context)
+                answer = report_agent.ask(L, None, ss.ps_receipts, ss.ps_note, None, lib.llm_client(),
+                                          NOTE + lib.event_note("ps"), context=context)
                 ss.ps_out, ss.ps_call = answer.input, answer.info
                 ss.ps_basis = (pid, int(ss.ps_month), (ss.get("ps_name") or "").strip())
                 ss.ps_body_reset, ss.ps_result = True, None
         except AgentError as e:
             st.error(f"초안을 만들지 못했습니다: {e}")
+    with event_box:
+        lib.event_fields("ps")
+        st.caption("날짜를 비워 두면 영수증을 읽은 뒤 영수증 날짜로 채웁니다. 행사 정보는 함께 만들어지는 신청서에도 들어갑니다.")
 
 if not ss.get("ps_out"):
     st.stop()
@@ -92,11 +99,10 @@ with st.container(border=True):
     st.text_area("경과보고", key="ps_body", height=150)
     for w in comp.warnings:
         st.warning(f"🔎 {w}")
-    event = lib.event_fields("ps", *lib.receipt_span(receipts))
-    st.caption("행사 정보는 보고서와 함께 만들어지는 신청서에도 똑같이 들어갑니다.")
 
 # ---------------------------------------------------------------- 3. 한도 계산·검증
-draft = ReportDoc(**event, 월=int(ss.ps_month), 사업ID=pid, 행사명=event_name, 작성일=lib.today(),
+draft = ReportDoc(**lib.event_values("ps"), 월=int(ss.ps_month), 사업ID=pid, 행사명=event_name,
+                  작성일=lib.today(),
                   세부내역=comp.세부내역, 경과보고=ss.ps_body)
 used = sum(i.단가 * i.수량 for i in draft.세부내역)
 limit = L.business_limit(pid)

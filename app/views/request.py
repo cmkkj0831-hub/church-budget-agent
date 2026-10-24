@@ -1,6 +1,5 @@
-"""📝 예산 신청서: 자연어 → 초안(수정 가능, 계산값 실시간) → 빠진 정보 → 검증 → 미리보기 → 생성."""
-from datetime import datetime, time
-
+"""📝 예산 신청서: 자연어 + 행사 정보(일시·장소·참가대상·인원) → 초안(수정 가능, 계산값 실시간) → 빠진 정보 → 검증 →
+미리보기 → 생성. 1단계에 적은 행사 정보는 Claude에도 알리고, 초안은 비어 있는 칸만 채운다."""
 import lib
 import pandas as pd
 import streamlit as st
@@ -38,9 +37,13 @@ if st.session_state.get("req_result"):  # 생성 뒤에는 결과만(바뀐 장�
 
 
 def start(draft: RequestDraft) -> None:
-    """초안을 위젯 상태에 옮긴다."""
-    d, rules = draft.doc, L.settings.금액문서기준
+    """초안을 위젯 상태에 옮긴다. 행사 정보는 사용자가 1단계에 채운 칸을 그대로 두고 빈 칸만 채운다
+    (1단계 행사 정보 위젯보다 먼저 불러야 한다)."""
+    d = draft.doc
     ss = st.session_state
+    entered = lib.event_entered("req")
+    draft.missing = [k for k in draft.missing if k not in entered]
+    draft.defaulted = [k for k in draft.defaulted if k not in entered]
     ss.req_draft = draft
     ss.req_result = None
     ss.req_행사명 = d.행사명
@@ -48,13 +51,11 @@ def start(draft: RequestDraft) -> None:
     ss.req_사업ID = d.사업ID or next(iter(L.plan))
     ss.req_행사유형 = d.행사유형
     ss.req_목적 = d.목적
-    start_dt = d.시작 or datetime.combine(lib.today(), time.fromisoformat(rules.기본시작시각))
-    end_dt = d.종료 or datetime.combine(start_dt.date(), time.fromisoformat(rules.기본종료시각))
-    ss.req_시작일, ss.req_시작시각 = start_dt.date(), start_dt.time()
-    ss.req_종료일, ss.req_종료시각 = end_dt.date(), end_dt.time()
-    ss.req_박, ss.req_일 = d.박 or 0, d.일 or 0
-    ss.req_장소, ss.req_참가대상 = d.장소, d.참가대상
-    ss.req_인원_총, ss.req_인원_남, ss.req_인원_여 = d.인원_총 or 0, d.인원_남 or 0, d.인원_여 or 0
+    lib.fill_event_blanks("req", {
+        "시작일": d.시작.date() if d.시작 else None, "시작시각": d.시작.time() if d.시작 else None,
+        "종료일": d.종료.date() if d.종료 else None, "종료시각": d.종료.time() if d.종료 else None,
+        "박": d.박, "일": d.일, "장소": d.장소, "참가대상": d.참가대상,
+        "인원_총": d.인원_총, "인원_남": d.인원_남, "인원_여": d.인원_여})
     ss.req_행사일정 = d.행사일정
     ss.req_작성일 = lib.today()
     ss.req_items_df = pd.DataFrame([{k: getattr(i, k) for k in ITEM_COLS} for i in d.세부내역], columns=ITEM_COLS)
@@ -66,15 +67,20 @@ with st.container(border=True):
     st.markdown("**1. 행사 설명**")
     text = st.text_area("어떤 행사인가요?", key="req_text", height=90,
                         placeholder="예: 12월 20일 성탄 행사, 어린이 120명, 간식 3000원씩, 선물 5000원씩")
+    event_box = st.container()  # 행사 정보 칸(버튼 처리 뒤에 그려 초안 값으로 빈 칸을 채울 수 있게)
     c1, c2 = st.columns([1, 1])
     if c1.button("초안 만들기", type="primary", disabled=not text.strip()):
         with st.spinner("Claude가 신청서 정보를 뽑는 중…"):
             try:
-                start(extract_request(text, L, lib.today(), client=lib.llm_client()))
+                info = lib.event_text("req")
+                prompt = text + (f"\n\n[행사 정보 입력칸 — 이 값을 그대로 쓴다]\n{info}" if info else "")
+                start(extract_request(prompt, L, lib.today(), client=lib.llm_client()))
             except AgentError as e:
                 st.error(f"초안을 만들지 못했습니다: {e}")
     if c2.button("빈 양식으로 직접 입력"):
         start(RequestDraft(RequestDoc(월=lib.today().month, 사업ID="", 행사명="")))
+    with event_box:
+        lib.event_fields("req")
 
 draft: RequestDraft | None = st.session_state.get("req_draft")
 if draft is None:
@@ -87,7 +93,7 @@ with st.container(border=True):
     if draft.calls:
         st.caption(" · ".join(c.line() for c in draft.calls))
     if draft.missing:
-        st.info("❓ 설명에 없던 정보입니다. 아래에서 채워 주세요: " + ", ".join(draft.missing))
+        st.info("❓ 설명에 없던 정보입니다. 1단계 행사 정보나 아래 칸에서 채워 주세요: " + ", ".join(draft.missing))
     if draft.defaulted:
         st.caption("설정 기본값으로 채운 칸: " + ", ".join(draft.defaulted))
 
@@ -104,21 +110,7 @@ with st.container(border=True):
     a, b = st.columns([1, 3])
     a.selectbox("행사유형", EVENT_TYPES, key="req_행사유형")
     b.text_input("목적", key="req_목적")
-    a, b, c, d = st.columns(4)
-    a.date_input("시작일", key="req_시작일")
-    b.time_input("시작 시각", key="req_시작시각")
-    c.date_input("종료일", key="req_종료일")
-    d.time_input("종료 시각", key="req_종료시각")
-    a, b, c, d, e, f = st.columns(6)
-    a.number_input("박", 0, 30, key="req_박")
-    b.number_input("일", 0, 31, key="req_일")
-    c.number_input("인원(총)", 0, key="req_인원_총")
-    d.number_input("남", 0, key="req_인원_남")
-    e.number_input("여", 0, key="req_인원_여")
-    f.date_input("작성일", key="req_작성일")
-    a, b = st.columns(2)
-    a.text_input("장소", key="req_장소")
-    b.text_input("참가대상", key="req_참가대상")
+    st.date_input("작성일", key="req_작성일")
     st.text_area("행사 일정", key="req_행사일정", height=110)
     account = lib.account_override("req")
 
@@ -134,13 +126,10 @@ for row in items_df.to_dict("records"):
         continue
     items.append(LineItem(계정과목=str(row.get("계정과목") or ""), 내용=str(row["내용"]),
                           단가=int(row["단가"]), 수량=int(row["수량"])))
-n = lambda v: int(v) if v else None
 doc = RequestDoc(
-    월=int(ss.req_월), 사업ID=ss.req_사업ID, 작성일=ss.req_작성일, 행사명=ss.req_행사명.strip(),
-    행사유형=ss.req_행사유형, 목적=ss.req_목적, 시작=datetime.combine(ss.req_시작일, ss.req_시작시각),
-    종료=datetime.combine(ss.req_종료일, ss.req_종료시각), 박=n(ss.req_박), 일=n(ss.req_일),
-    장소=ss.req_장소, 참가대상=ss.req_참가대상, 인원_총=n(ss.req_인원_총), 인원_남=n(ss.req_인원_남),
-    인원_여=n(ss.req_인원_여), 행사일정=ss.req_행사일정, 세부내역=items, 계좌_override=account)
+    **lib.event_values("req"), 월=int(ss.req_월), 사업ID=ss.req_사업ID, 작성일=ss.req_작성일,
+    행사명=ss.req_행사명.strip(), 행사유형=ss.req_행사유형, 목적=ss.req_목적, 행사일정=ss.req_행사일정,
+    세부내역=items, 계좌_override=account)
 build = L.build_request(doc, today=lib.today())
 built = build.docs[0]
 

@@ -225,18 +225,16 @@ def receipt_span(receipts) -> tuple[date | None, date | None]:
     return (days[0], days[-1]) if days else (None, None)
 
 
-def event_fields(prefix: str, start: date | None = None, end: date | None = None) -> dict:
-    """일시(시작·종료일, 시각, 박·일)·장소·참가대상·인원(총·남·여) 입력. 보고서·사후정산 공용(신청서 화면과 같은 칸).
-    처음 그릴 때만 기본값: 날짜 = start/end(영수증 날짜 등), 시각·장소·참가대상 = 설정. 반환값은 DocBase 필드."""
-    from datetime import time as dtime
+EVENT_KEYS = ("시작일", "시작시각", "종료일", "종료시각", "박", "일", "인원_총", "인원_남", "인원_여", "장소", "참가대상")
+
+
+def event_fields(prefix: str) -> None:
+    """일시(시작·종료일, 시각, 박·일)·장소·참가대상·인원(총·남·여) 입력. 신청서·보고서·사후정산 1단계 공용.
+    비워 둔 칸: 시각은 설정 기본 시각, 장소·참가대상은 설정 기본값으로 문서에 들어간다. 값은 event_values로 읽는다."""
     ss = st.session_state
-    s = ledger().settings
-    rules = s.금액문서기준
-    hm = lambda t: dtime(*map(int, t.split(":")))  # noqa: E731
-    for k, v in ((f"{prefix}_시작일", start), (f"{prefix}_종료일", end or start),
-                 (f"{prefix}_시작시각", hm(rules.기본시작시각)), (f"{prefix}_종료시각", hm(rules.기본종료시각)),
-                 (f"{prefix}_장소", s.기본정보.기본장소), (f"{prefix}_참가대상", s.기본정보.참가대상)):
-        ss.setdefault(k, v)
+    base = ledger().settings.기본정보
+    for k in ("시작일", "시작시각", "종료일", "종료시각"):
+        ss.setdefault(f"{prefix}_{k}", None)
     st.markdown("**행사 정보** (문서의 일시·장소·참가대상·인원 칸)")
     a, b, c, d = st.columns(4)
     a.date_input("시작일", key=f"{prefix}_시작일")
@@ -250,14 +248,57 @@ def event_fields(prefix: str, start: date | None = None, end: date | None = None
     d.number_input("남", 0, key=f"{prefix}_인원_남")
     e.number_input("여", 0, key=f"{prefix}_인원_여")
     a, b = st.columns(2)
-    a.text_input("장소", key=f"{prefix}_장소")
-    b.text_input("참가대상", key=f"{prefix}_참가대상")
-    g = lambda k: ss.get(f"{prefix}_{k}")  # noqa: E731
-    n = lambda k: int(g(k)) if g(k) else None  # noqa: E731
-    when = lambda day, t: datetime.combine(day, t) if day and t else None  # noqa: E731
-    return {"시작": when(g("시작일"), g("시작시각")), "종료": when(g("종료일") or g("시작일"), g("종료시각")),
-            "박": n("박"), "일": n("일"), "장소": (g("장소") or "").strip(), "참가대상": (g("참가대상") or "").strip(),
-            "인원_총": n("인원_총"), "인원_남": n("인원_남"), "인원_여": n("인원_여")}
+    a.text_input("장소", key=f"{prefix}_장소", placeholder=f"비우면 {base.기본장소}")
+    b.text_input("참가대상", key=f"{prefix}_참가대상", placeholder=f"비우면 {base.참가대상}")
+
+
+def event_entered(prefix: str) -> dict:
+    """사용자가 채운 행사 정보 칸만 {칸: 값}."""
+    ss = st.session_state
+    out = {}
+    for k in EVENT_KEYS:
+        v = ss.get(f"{prefix}_{k}")
+        if isinstance(v, str):
+            v = v.strip()
+        if v:
+            out[k] = v
+    return out
+
+
+def event_text(prefix: str) -> str:
+    """Claude에 알려 줄 행사 정보 줄(채운 칸만). 없으면 빈 문자열."""
+    e = event_entered(prefix)
+    return "\n".join(f"{k}: {v}" for k, v in e.items())
+
+
+def event_note(prefix: str) -> str:
+    """보고서·사후정산 초안 요청에 덧붙일 행사 정보 블록(채운 칸만)."""
+    info = event_text(prefix)
+    return f"\n\n[행사 정보 — 회계담당 입력, 경과보고 날짜·참가 인원에 참고]\n{info}" if info else ""
+
+
+def fill_event_blanks(prefix: str, values: dict) -> None:
+    """비어 있는 행사 정보 칸만 values로 채운다(위젯을 그리기 전에 부를 것)."""
+    ss = st.session_state
+    entered = event_entered(prefix)
+    for k, v in values.items():
+        if k in EVENT_KEYS and k not in entered and v not in (None, "", 0):
+            ss[f"{prefix}_{k}"] = v
+
+
+def event_values(prefix: str) -> dict:
+    """행사 정보 칸 → 문서 필드(DocBase). 시각을 비우면 설정 기본 시각, 종료일을 비우면 시작일."""
+    from datetime import time as dtime
+    rules = ledger().settings.금액문서기준
+    e = event_entered(prefix)
+    hm = lambda t: dtime(*map(int, t.split(":")))  # noqa: E731
+    start_day = e.get("시작일")
+    end_day = e.get("종료일") or start_day
+    start = datetime.combine(start_day, e.get("시작시각") or hm(rules.기본시작시각)) if start_day else None
+    end = datetime.combine(end_day, e.get("종료시각") or hm(rules.기본종료시각)) if end_day else None
+    return {"시작": start, "종료": end, "박": e.get("박"), "일": e.get("일"),
+            "장소": e.get("장소", ""), "참가대상": e.get("참가대상", ""),
+            "인원_총": e.get("인원_총"), "인원_남": e.get("인원_남"), "인원_여": e.get("인원_여")}
 
 
 # ---------------------------------------------------------------- 표시

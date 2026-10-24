@@ -1,4 +1,5 @@
-"""🧾 집행 보고서: 신청서 선택 → 영수증 업로드·추출(수정 가능) → 경과보고 초안(수정 가능) → 검증 → 미리보기 → 생성.
+"""🧾 집행 보고서: 신청서 선택·영수증·경과보고·행사 정보(일시·장소·참가대상·인원) → 영수증 추출(수정 가능) →
+경과보고 초안(수정 가능) → 검증 → 미리보기 → 생성. 행사 날짜를 비워 두면 영수증 날짜로 채운다.
 결과: 보고서 hwpx + 영수증 첨부 docx(zip), 장부 반영."""
 from datetime import date
 
@@ -52,14 +53,20 @@ with st.container(border=True):
     lib.uploader("영수증 이미지·PDF (여러 장)", "rep_files", ["jpg", "jpeg", "png", "heic", "pdf"])
     st.text_area("경과보고(자연어)", key="rep_note", height=100,
                  placeholder="예: 8/15 미사 후 식대 29만2천원 연재, 플로라 / 8/16 회합 후 식대 4만3천원 연재")
+    event_box = st.container()  # 행사 정보(영수증을 읽은 뒤 빈 날짜를 채울 수 있게 버튼 처리 뒤에 그린다)
     if st.button("영수증 읽기", disabled=not ss.get("rep_files")):
         with st.spinner(f"영수증 {len(ss.rep_files)}장을 읽는 중…"):
             try:
                 ss.rep_receipts = extract_receipts(lib.save_uploads("rep_files"), L, client=lib.llm_client())
                 ss.rep_out = None
                 ss.rep_result = None
+                first, last = lib.receipt_span(ss.rep_receipts)
+                lib.fill_event_blanks("rep", {"시작일": first, "종료일": last})
             except AgentError as e:
                 st.error(f"영수증을 읽지 못했습니다: {e}")
+    with event_box:
+        lib.event_fields("rep")
+        st.caption("날짜를 비워 두면 영수증을 읽은 뒤 영수증 날짜로 채웁니다. 장소·참가대상을 비우면 설정 기본값이 들어갑니다.")
 
 receipts = ss.get("rep_receipts")
 if not receipts:
@@ -90,7 +97,8 @@ with st.container(border=True):
     if st.button("보고서 초안 만들기", type="primary"):
         with st.spinner("Claude가 세부내역·경과보고를 정리하는 중…"):
             try:
-                answer = report_agent.ask(L, request, receipts, ss.rep_note, None, lib.llm_client())
+                answer = report_agent.ask(L, request, receipts, ss.rep_note, None, lib.llm_client(),
+                                          lib.event_note("rep"))
                 ss.rep_out, ss.rep_call = answer.input, answer.info
                 ss.rep_body_reset = True
                 ss.rep_result = None
@@ -123,10 +131,10 @@ with st.container(border=True):
     st.text_area("경과보고", key="rep_body", height=180)
     st.dataframe(pd.DataFrame([{"계정과목": i.계정과목, "내용": i.내용, "금액": i.단가} for i in comp.세부내역]),
                  hide_index=True, width="stretch")
-    event = lib.event_fields("rep", *lib.receipt_span(receipts))
     account = lib.account_override("rep")
 
-draft = ReportDoc(**report_agent.report_fields(request), **event, 작성일=ss.get("rep_date") or lib.today(),
+draft = ReportDoc(**report_agent.report_fields(request), **lib.event_values("rep"),
+                  작성일=ss.get("rep_date") or lib.today(),
                   세부내역=comp.세부내역, 경과보고=ss.rep_body,
                   계좌_override=account)
 build = L.build_report(draft, request, today=lib.today())
