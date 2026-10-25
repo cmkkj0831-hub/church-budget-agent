@@ -7,10 +7,14 @@
 
 - **화면은 🧾 집행 보고서와 ⚙️ 설정 두 개뿐.** 예산신청서·사후정산·오류 관리(이슈)·대시보드·회계연도 전환·인수인계와
   장부(ledger)·이력·되돌리기·사용량 기록은 모두 삭제했다(git 이력에 남음). 다시 넣으려면 사용자에게 먼저 묻는다.
-- **입력은 행사·목적(자연어)과 영수증 이미지뿐 (2026-10-26)**: 보고서 화면에는 행사·목적 칸, 영수증 업로드, [보고서 만들기]만 있다.
-  행사·목적은 양식의 행사명·목적 칸에 입력 그대로 넣고(여러 줄은 줄마다 문단), Claude가 경과보고(머리말·항목)를 그 맥락에 맞게 쓰도록 넘긴다. hwpx에는 경과보고
+- **입력은 행사·목적(자연어)·일시·참가인원과 영수증 이미지 (2026-10-26)**: 보고서 화면에는 행사·목적, 일시(시작·종료 날짜·시각),
+  참가인원(총, 남·여는 '기타' 펼침 안), 영수증 업로드, [보고서 만들기]만 있다. 입력값은 양식의 해당 칸에 그대로 넣고
+  (여러 줄은 줄마다 문단, 박·일은 일시로 자동 계산: 박 = 종료일 − 시작일, 일 = 박 + 1), Claude가 경과보고(머리말·항목)를
+  입력 내용과 올해 사업계획(data/{연도}/plan.csv의 시기·사업명·세부내역) 맥락에 맞게 쓰도록 넘긴다. hwpx에는 경과보고
   (Claude가 영수증으로 작성)·합계(B)(영수증 금액 합, 코드)와 설정값(주관단체·기안자·기안단체장·기본 장소·참가대상·연락처·계좌)만
-  채우고 나머지 칸(문서번호·작성일·일시·인원·세부내역·본당보조·자체예산·예산(A)·잔액)은 빈 양식 그대로 둔다.
+  채우고 나머지 칸(문서번호·작성일·세부내역·본당보조·자체예산·예산(A)·잔액)은 빈 양식 그대로 둔다.
+- **채운 글자는 검정**: 양식 칸 안내 글씨는 빨강·파랑 글자모양이라 그대로 이어받으면 채운 글자도 빨갛다. render가 header.xml에
+  색만 검정인 글자모양 복제본을 더하고 채운 글자에만 쓴다(`hwpx.fill.black_char_props`). 양식 원래 글씨는 그대로.
   화면에서 고치는 칸도 없다(한글에서 고친다). 아무것도 저장하지 않는다(zip 내려받기만). 저장하는 것은 설정(data/settings.json)뿐.
 - **보안 기능 없음 (2026-10-23 결정)**: 앱 로그인·비밀번호·역할·암호화는 없다. 접근 제한은 **Streamlit 앱 공유 설정
   ('초대한 사람만')**과 **GitHub 비공개 저장소**로 한다. 다시 로그인·암호화를 넣지 않는다.
@@ -33,13 +37,15 @@
 ```
 app/        Streamlit 앱 (streamlit run app/Home.py)
   Home.py     st.navigation(집행 보고서·설정, 로그인 없음)
-  lib.py      공통: 저장소·설정 상태, save_settings(커밋, 충돌 처리), 문서 생성(설정의 연락처·계좌 채움), 업로드
+  lib.py      공통: 저장소·설정·사업계획 상태, save_settings(커밋, 충돌 처리), 문서 생성(설정의 연락처·계좌 채움), 업로드,
+              일시·참가인원 입력(event_fields·event_values)
   forms.py    설정 입력(기본 정보·회계연도·기안자·연락처·계좌·교사명단), API 키 상태
   views/      report(🧾) settings(⚙️)
 core/       순수 Python(UI·LLM 의존 없음)
   paths.py    경로 상수, NFC 헬퍼
   models.py   pydantic: LineItem, AccountInfo, DocBase, RequestDoc(hwpx 모듈 호환용), ReportDoc, Settings, Receipt
-  report.py   load_settings/save_settings, receipts_total, build_report(설정 + 경과보고 + 합계 → 그 칸만 채운 ReportDoc),
+  report.py   load_settings/save_settings, load_plan(사업계획 시기·사업명·세부내역), nights_days(박·일), receipts_total,
+              build_report(설정 + 경과보고 + 합계 + 행사명·목적·일시·인원 → 그 칸만 채운 ReportDoc),
               file_stem(집행보고서_{가장 이른 영수증 날짜})
   secrets.py  .streamlit/secrets.toml 읽기(앱 밖 에이전트·스크립트용 API 키)
   storage.py  저장 계층: 세션별 data/ 작업 사본(Workspace) → commit(바뀐·새 파일). LocalStorage·GitHubStorage(PyGithub,
@@ -58,10 +64,11 @@ agents/     Claude API 호출(정보 추출·문장 작성만. 계산은 core)
                       도구 스키마 제약: 속성 이름 ^[a-zA-Z0-9_.-]{1,64}$ → 한글 키는 ALIASES로 영문 변환,
                       null 허용 enum은 anyOf, null 허용(union) 속성은 스키마당 16개까지
   receipt_agent.py    영수증 이미지/PDF/HEIC → 날짜·상호·금액·품목요약·승인번호(못 읽으면 null + 확인필요)
-  report_agent.py     행사 정보 + 영수증 + 경과보고 메모 → 세부내역 묶음·경과보고 줄(compose_report)
+  report_agent.py     행사 정보 + 사업계획 + 영수증 → 세부내역 묶음·경과보고 줄(compose_report), 고른 사업(사업명_참고, 화면에 표시)
 scripts/    check_cloud.py(secrets·GitHub 읽기/임시 브랜치 쓰기·설정·Claude 1회·보고서 hwpx 왕복·영수증 docx, 비밀값 출력 없음),
             eval_extraction.py(8월 신앙학교 영수증 추출 평가, 실제 API 호출)
 data/       settings.json(설정 — main에서는 연락처·계좌 빈칸, 실제 값은 data 브랜치)
+  {연도}/plan.csv  사업계획(2026_사업계획서 엑셀에서 옮김). 경과보고 맥락용으로 시기·사업명·세부내역만 쓴다
 docs/       사용설명서.md, 회계담당_접속안내.md
 .streamlit/ config.toml(테마, 업로드 한 파일 30MB — 커밋), secrets.toml.example(커밋), secrets.toml(커밋 금지)
 tests/      pytest
@@ -105,3 +112,4 @@ out/        생성 결과물 — 커밋 금지
 - [x] 7단계 (2026-10-25) 집행보고서·설정만 남기고 축소(장부 없이 문서번호·연결 신청서·신청액 직접 입력, 박·일 칸 삭제)
 - [x] 8단계 (2026-10-26) 보고서 입력을 영수증 이미지 하나로: 경과보고·합계(B)·설정값만 채우고 나머지 빈칸, 설정 '문서 양식' 탭 삭제
   - 행사·목적 입력칸 추가(경과보고 맥락 + 양식의 행사명·목적 칸에 그대로)
+  - 채운 글자 검정, 사업계획(시기·사업명) 맥락 반영, 일시(박·일 자동)·참가인원(남·여는 기타) 입력 다시 추가

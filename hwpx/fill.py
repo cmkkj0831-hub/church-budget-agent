@@ -126,25 +126,51 @@ _TC = re.compile(r"<hp:tc\b.*?</hp:tc>", re.S)
 _P = re.compile(r"<hp:p\b[^>]*>.*?</hp:p>", re.S)
 
 
-def _paragraph(proto: str, text: str) -> str:
-    """proto 문단의 속성·글자모양을 유지한 새 문단."""
+HEADER = "Contents/header.xml"
+BLACK = "#000000"
+
+
+def black_char_props(header: str) -> tuple[str, dict[str, str]]:
+    """색 있는 글자모양(양식 안내 글씨의 빨강·파랑)마다 색만 검정으로 바꾼 복제본을 header에 더한다.
+    반환: (새 header, {원래 id: 검정 복제본 id}). 채운 글자에만 복제본을 쓰고 양식 원래 글씨는 그대로 둔다."""
+    props = re.findall(r'<hh:charPr id="(\d+)"[^>]*?textColor="([^"]+)".*?</hh:charPr>', header, re.S)
+    next_id = max((int(i) for i, _ in props), default=-1) + 1
+    clones, mapping = [], {}
+    for m in re.finditer(r'<hh:charPr id="(\d+)"[^>]*?textColor="([^"]+)".*?</hh:charPr>', header, re.S):
+        if m.group(2).upper() == BLACK:
+            continue
+        clone = re.sub(r'id="\d+"', f'id="{next_id}"', m.group(), count=1)
+        clones.append(re.sub(r'textColor="[^"]+"', f'textColor="{BLACK}"', clone, count=1))
+        mapping[m.group(1)] = str(next_id)
+        next_id += 1
+    if not clones:
+        return header, {}
+    header = header.replace("</hh:charProperties>", "".join(clones) + "</hh:charProperties>", 1)
+    header = re.sub(r'(<hh:charProperties itemCnt=")(\d+)"', lambda m: f'{m.group(1)}{int(m.group(2)) + len(clones)}"',
+                    header, count=1)
+    return header, mapping
+
+
+def _paragraph(proto: str, text: str, char_map: dict[str, str] | None = None) -> str:
+    """proto 문단의 속성·글자모양을 유지한 새 문단. 글자가 있으면 색 있는 글자모양은 검정 복제본(char_map)으로."""
     open_tag = re.match(r"<hp:p\b[^>]*>", proto).group()
     char = re.search(r'<hp:run charPrIDRef="(\d+)"', proto)
     char_ref = char.group(1) if char else "0"
     if text:
+        char_ref = (char_map or {}).get(char_ref, char_ref)
         return f'{open_tag}<hp:run charPrIDRef="{char_ref}"><hp:t>{escape(text)}</hp:t></hp:run></hp:p>'
     return f'{open_tag}<hp:run charPrIDRef="{char_ref}"/></hp:p>'
 
 
-def _replace_cell(cell: str, lines: list[str]) -> str:
+def _replace_cell(cell: str, lines: list[str], char_map: dict[str, str] | None = None) -> str:
     paras = _P.findall(cell)
     start = cell.index(paras[0])
     end = cell.index(paras[-1]) + len(paras[-1])
-    new = "".join(_paragraph(paras[0], line) for line in (lines or [""]))
+    new = "".join(_paragraph(paras[0], line, char_map) for line in (lines or [""]))
     return cell[:start] + new + cell[end:]
 
 
-def fill_section(xml: str, values: dict[tuple[int, int], list[str]]) -> str:
+def fill_section(xml: str, values: dict[tuple[int, int], list[str]], char_map: dict[str, str] | None = None) -> str:
     present = {(int(r), int(c)) for c, r in re.findall(r'colAddr="(\d+)" rowAddr="(\d+)"', xml)}
     missing = set(values) - present
     if missing:
@@ -154,7 +180,7 @@ def fill_section(xml: str, values: dict[tuple[int, int], list[str]]) -> str:
         cell = m.group()
         a = re.search(r'colAddr="(\d+)" rowAddr="(\d+)"', cell)
         key = (int(a.group(2)), int(a.group(1)))
-        return _replace_cell(cell, values[key]) if key in values else cell
+        return _replace_cell(cell, values[key], char_map) if key in values else cell
 
     return _TC.sub(sub, xml)
 
@@ -237,12 +263,15 @@ def render(doc: RequestDoc | ReportDoc, path, row_mode: RowMode = "clone", templ
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     with zipfile.ZipFile(template or L.template) as src, zipfile.ZipFile(tmp, "w") as dst:
+        header, char_map = black_char_props(src.read(HEADER).decode("utf-8"))
         for info in src.infolist():
             data = src.read(info)
-            if info.filename == SECTION:
+            if info.filename == HEADER:
+                data = header.encode("utf-8")
+            elif info.filename == SECTION:
                 xml = expand_item_rows(data.decode("utf-8"), extra)
                 values = cell_values(fields, rows, resolve(cells_from_xml(xml), L))
-                data = fill_section(xml, values).encode("utf-8")
+                data = fill_section(xml, values, char_map).encode("utf-8")
             dst.writestr(info, data, compress_type=info.compress_type)
     _write_preview(tmp)
     tmp.replace(path)

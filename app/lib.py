@@ -4,7 +4,8 @@ import io
 import sys
 import tempfile
 import zipfile
-from datetime import date
+from datetime import date, datetime
+from datetime import time as dtime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -15,7 +16,8 @@ import streamlit as st  # noqa: E402
 
 from core.models import Settings  # noqa: E402
 from core.paths import DATA_DIR  # noqa: E402
-from core.report import load_settings, save_settings as save_settings_file  # noqa: E402
+from core.report import load_plan, load_settings, nights_days  # noqa: E402
+from core.report import save_settings as save_settings_file  # noqa: E402
 from core.storage import ConflictError, storage_from_secrets  # noqa: E402
 
 
@@ -46,11 +48,21 @@ def load(force: bool = False) -> None:
         ss.ws = storage().checkout()
     if force or "settings" not in ss:
         ss.settings = load_settings(ss.ws.path)
+        ss.pop("plan", None)
 
 
 def settings() -> Settings:
     load()
     return st.session_state.settings
+
+
+def plan() -> list[dict]:
+    """올해 사업계획(시기·사업명·세부내역). data/{회계연도}/plan.csv, 없으면 빈 목록."""
+    load()
+    ss = st.session_state
+    if "plan" not in ss:
+        ss.plan = load_plan(ss.ws.path, ss.settings.현재연도)
+    return ss.plan
 
 
 def _commit(message: str) -> list[str] | None:
@@ -132,6 +144,46 @@ def uploader(label: str, key: str, types: list[str]) -> None:
         st.session_state[key] = [(f.name, f.getvalue()) for f in files]
     if st.session_state.get(key):
         st.caption(f"{len(st.session_state[key])}개: " + ", ".join(n for n, _ in st.session_state[key]))
+
+
+# ---------------------------------------------------------------- 일시·참가인원
+
+def event_fields(prefix: str) -> None:
+    """일시(시작·종료 날짜·시각, 박·일은 자동 계산해 보여 줌)와 참가인원(총, 남·여는 '기타' 안) 입력."""
+    ss = st.session_state
+    for k in ("시작일", "시작시각", "종료일", "종료시각"):
+        ss.setdefault(f"{prefix}_{k}", None)
+    rules = settings().금액문서기준
+    st.markdown("**일시**")
+    a, b, c, d = st.columns(4)
+    a.date_input("시작일", key=f"{prefix}_시작일")
+    b.time_input("시작 시각", key=f"{prefix}_시작시각", help=f"비우면 {rules.기본시작시각}")
+    c.date_input("종료일", key=f"{prefix}_종료일", help="비우면 시작일과 같은 날")
+    d.time_input("종료 시각", key=f"{prefix}_종료시각", help=f"비우면 {rules.기본종료시각}")
+    start, end = ss.get(f"{prefix}_시작일"), ss.get(f"{prefix}_종료일")
+    if start and end and end < start:
+        st.warning("종료일이 시작일보다 앞섭니다.")
+    nights, days = nights_days(start, end)
+    if start:
+        st.caption(f"→ {nights}박 {days}일 (일시로 자동 계산해 보고서에 넣습니다)")
+    st.number_input("참가인원(총)", 0, key=f"{prefix}_인원_총")
+    with st.expander("기타 (남·여 인원, 선택)"):
+        a, b = st.columns(2)
+        a.number_input("남", 0, key=f"{prefix}_인원_남")
+        b.number_input("여", 0, key=f"{prefix}_인원_여")
+
+
+def event_values(prefix: str) -> dict:
+    """입력 → 보고서 필드(시작·종료·인원). 시각을 비우면 설정 기본 시각, 종료일을 비우면 시작일. 0명은 빈칸."""
+    ss = st.session_state
+    rules = settings().금액문서기준
+    hm = lambda t: dtime(*map(int, t.split(":")))  # noqa: E731
+    g = lambda k: ss.get(f"{prefix}_{k}")  # noqa: E731
+    start_day, end_day = g("시작일"), g("종료일") or g("시작일")
+    start = datetime.combine(start_day, g("시작시각") or hm(rules.기본시작시각)) if start_day else None
+    end = datetime.combine(end_day, g("종료시각") or hm(rules.기본종료시각)) if end_day else None
+    n = lambda k: int(g(k)) if g(k) else None  # noqa: E731
+    return {"시작": start, "종료": end, "인원_총": n("인원_총"), "인원_남": n("인원_남"), "인원_여": n("인원_여")}
 
 
 # ---------------------------------------------------------------- 표시

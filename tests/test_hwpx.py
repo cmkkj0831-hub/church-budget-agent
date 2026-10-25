@@ -112,6 +112,26 @@ def test_report_only_body_total_and_settings(settings, tmp_path):
     assert back.경과보고 == "10월 교리 간식을 다음과 같이 사용하였습니다." and back.세부내역 == []
 
 
+def test_filled_text_is_black(settings, tmp_path):
+    """양식 칸의 안내 글씨는 빨강·파랑이지만 채운 글자는 같은 모양의 검정 복제본을 쓴다(양식 원래 글씨는 그대로)."""
+    settings.계좌.예금주 = "홍길동"
+    doc = settings.fill_contacts(build_report(settings, "본문 줄", 1_000, "행사 이름", "목적 문장",
+                                              datetime(2026, 10, 5, 10), datetime(2026, 10, 6, 12), 40))
+    path = render(doc, tmp_path / "r.hwpx")
+    with zipfile.ZipFile(path) as z, zipfile.ZipFile(REPORT_TEMPLATE) as t:
+        head, sec = z.read("Contents/header.xml").decode(), z.read("Contents/section0.xml").decode()
+        base_sec = t.read("Contents/section0.xml").decode()
+    ET.fromstring(head)
+    color = dict(re.findall(r'<hh:charPr id="(\d+)"[^>]*?textColor="([^"]+)"', head))
+    assert int(re.search(r'charProperties itemCnt="(\d+)"', head).group(1)) == len(color)
+    runs = dict((t, ref) for ref, t in re.findall(r'<hp:run charPrIDRef="(\d+)"><hp:t>([^<]*)</hp:t>', sec))
+    for text in ("본문 줄", "행사 이름", "목적 문장", "홍길동", "1,000원"):
+        assert color[runs[text]] == "#000000", text
+    assert "#FF0000" in color.values()  # 양식의 빨간 글자모양 자체는 남아 있다
+    cells = read_cells(path)
+    assert cells[REPORT_CELLS["일시"]][0].endswith("(  1박  2일)") and cells[REPORT_CELLS["인원"]][0].startswith(" 총 40명")
+
+
 def test_fill_contacts_from_settings(settings, tmp_path):
     """연락처 = 설정, 계좌 칸별 = 문서별 덮어쓰기(빈 칸 제외) > 설정. 설정이 비면 문서도 빈칸."""
     s = settings.model_copy(deep=True)

@@ -83,7 +83,7 @@ ALIASES = {
     "머리말": "intro", "경과보고_줄": "progress_lines", "항목": "item", "영수증번호": "receipt_numbers",
     "참가자": "participants", "노트_언급": "from_note", "노트_날짜": "note_date", "노트_금액": "note_amount",
     "세부내역": "line_items", "건의사항": "suggestion", "불일치_메모": "mismatch_notes",
-    "행사명_제안": "suggested_event_name",
+    "행사명_제안": "suggested_event_name", "사업명_참고": "matched_business",
     # 이슈
     "해결유형": "resolution_type", "변경안": "changes", "순번": "seq", "열": "column", "변경후": "new_value",
     "사유": "why", "추가행": "rows_to_add", "함께해결": "resolve_together", "해결내용": "resolution_note",

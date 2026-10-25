@@ -20,7 +20,7 @@ FORMAT_EXAMPLE = """8월 교사회 운영비를 다음과 같이 사용하였습
 8월 16일 회합 후 다과 : 43,300원 / 참가자 : 홍길동 베드로"""
 
 SYSTEM = """너는 천주교 개포동성당 초등부 교사회의 예산집행보고서(서식2) 초안을 쓴다.
-입력: 회계담당이 자연어로 적은 행사·목적(비어 있을 수 있음),
+입력: 회계담당이 자연어로 적은 행사·목적·일시·인원(비어 있을 수 있음), 올해 사업계획(시기 | 사업명 | 세부내역),
 영수증 목록(번호·날짜·상호·금액·품목), 경과보고 메모(progress_note, 없을 수 있음).
 
 할 일
@@ -31,6 +31,9 @@ SYSTEM = """너는 천주교 개포동성당 초등부 교사회의 예산집행
    - 행사·목적에서 맥락(무슨 행사인지, 누구를 위해 왜 썼는지)을 판단해 머리말과 각 줄의 항목을 그 행사에 맞게 쓴다.
      예: 행사 "10월 교리 후 간식" → 머리말 "10월 초등부 교리 간식비를 다음과 같이 사용하였습니다.", 항목 "교리 후 어린이 간식 구입".
      행사·목적이 없으면 영수증만 보고 쓴다.
+   - 사업계획에서 행사·목적·영수증(날짜·품목)에 맞는 사업을 하나 고르고, 그 사업명·시기·세부내역의 맥락도 머리말·항목에
+     반영한다(예: 사업 "부서 소풍(전례부, 성가대)", 행사 "전례부 소풍" → "10월 전례부 소풍 비용을 다음과 같이 사용하였습니다.").
+     고른 사업명은 사업명_참고에 사업계획 표기 그대로 적는다. 맞는 사업이 없으면 사업명_참고는 null.
    - progress_note가 있으면 그 내용을 기준으로 줄을 만든다. 노트에 적힌 날짜·금액은 노트_날짜·노트_금액에 그대로 옮긴다.
      노트에서 나온 줄은 노트_언급=true. 노트에 없는 영수증으로 줄을 만들 때는 노트_언급=false.
    - progress_note가 없으면 영수증만으로 줄을 만든다(노트_언급=false, 노트_날짜·노트_금액 null).
@@ -58,6 +61,7 @@ SPEC = tool("submit_report_draft", "집행보고서 초안 제출", obj({
     })),
     "세부내역": arr(obj({"계정과목": s(), "내용": s(), "영수증번호": arr(i())})),
     "불일치_메모": arr(s()),
+    "사업명_참고": nullable(s("사업계획에서 고른 사업명(표기 그대로), 없으면 null")),
     "대행사_상호": arr(obj({"영수증번호": i(), "상호": s()}), "대행사 표기 영수증의 실제 상호(노트에 있을 때만)"),
 }))
 
@@ -101,6 +105,7 @@ class ReportComposition:
     warnings: list[str] = field(default_factory=list)
     참가자_선택: list[dict] = field(default_factory=list)  # 세례명이 겹쳐 고를 사람: {줄, 입력, 후보}
     calls: list[CallInfo] = field(default_factory=list)
+    사업명: str | None = None  # Claude가 사업계획에서 고른 사업(참고용)
 
 
 def md(d: date) -> str:
@@ -210,7 +215,7 @@ def compose(out: dict, receipts: list[ReceiptExtraction], roster: list[str], yea
     warnings += [f"검토 메모: {m}" for m in out.get("불일치_메모") or []]
 
     body = "\n".join([out.get("머리말") or "", *(ln.text() for ln in lines)]).strip()
-    return ReportComposition(items, body, lines, warnings, choices)
+    return ReportComposition(items, body, lines, warnings, choices, 사업명=out.get("사업명_참고") or None)
 
 
 # ---------------------------------------------------------------- 호출
@@ -228,16 +233,20 @@ def _receipt_lines(receipts: list[ReceiptExtraction]) -> str:
         f"{f'{r.금액:,}원' if r.금액 is not None else '금액 미상'} | {r.품목요약}" for r in receipts)
 
 
-def ask(settings: Settings, event: str, receipts, progress_note, client):
-    """event: 회계담당이 적은 행사 정보 줄(앱 lib.event_text 등). 비어 있을 수 있다."""
-    text = (f"[행사 정보 — 회계담당 입력]\n{event or '(없음)'}\n\n[영수증]\n{_receipt_lines(receipts)}\n\n"
-            f"[progress_note]\n{progress_note or '(없음)'}")
+def _plan_lines(plan: list[dict] | None) -> str:
+    return "\n".join(f"{p['시기']} | {p['사업명']} | {p['세부내역']}" for p in plan or []) or "(없음)"
+
+
+def ask(settings: Settings, event: str, receipts, progress_note, client, plan: list[dict] | None = None):
+    """event: 회계담당이 적은 행사 정보 줄. plan: core.report.load_plan(시기·사업명·세부내역). 비어 있을 수 있다."""
+    text = (f"[행사 정보 — 회계담당 입력]\n{event or '(없음)'}\n\n[사업계획 — 시기 | 사업명 | 세부내역]\n{_plan_lines(plan)}\n\n"
+            f"[영수증]\n{_receipt_lines(receipts)}\n\n[progress_note]\n{progress_note or '(없음)'}")
     return call(settings, client, _system(tuple(settings.교사명단)), text, SPEC, effort="high")
 
 
 def compose_report(settings: Settings, event: str, receipts: list[ReceiptExtraction],
-                   progress_note: str | None = None, client=None) -> ReportComposition:
-    result = ask(settings, event, receipts, progress_note, client)
+                   progress_note: str | None = None, client=None, plan: list[dict] | None = None) -> ReportComposition:
+    result = ask(settings, event, receipts, progress_note, client, plan)
     comp = compose(result.input, receipts, settings.교사명단, settings.현재연도, bool(progress_note))
     comp.calls.append(result.info)
     return comp

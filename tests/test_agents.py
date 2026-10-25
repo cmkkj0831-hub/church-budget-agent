@@ -190,6 +190,21 @@ def test_report_draft_without_note(settings):
     assert "[행사 정보 — 회계담당 입력]\n(없음)" in fake.prompt()
 
 
+def test_nights_days_and_plan(settings, data_dir):
+    from core.report import load_plan, nights_days
+    assert nights_days(date(2026, 10, 5), date(2026, 10, 7)) == (2, 3)
+    assert nights_days(date(2026, 10, 5), None) == (0, 1) and nights_days(None, None) == (None, None)
+    plan = load_plan(data_dir, 2026)
+    assert len(plan) == 15 and plan[0] == {"시기": "1월", "사업명": "6학년 졸업행사",
+                                           "세부내역": "꽃다발 30명×20, 프로그램, 식대 35명×20"}
+    assert load_plan(data_dir, 2099) == []
+    out = _report_output(사업명_참고="부서 소풍(전례부, 성가대)")
+    fake = FakeClient(tool_response("submit_report_draft", out))
+    comp = report_agent.compose_report(settings, "행사: 전례부 소풍", RECEIPTS[:2], client=fake, plan=plan)
+    assert comp.사업명 == "부서 소풍(전례부, 성가대)"
+    assert "[사업계획 — 시기 | 사업명 | 세부내역]\n1월 | 6학년 졸업행사 |" in fake.prompt()
+
+
 def test_report_without_inputs(settings):
     """앱은 영수증만 받는다: 행사 정보·메모 없이 초안을 쓰고, 문서는 경과보고·합계·설정값만."""
     out = _report_output(경과보고_줄=[{"날짜": None, "항목": "식대", "영수증번호": [1, 2], "참가자": [],
