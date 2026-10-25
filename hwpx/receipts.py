@@ -84,7 +84,7 @@ def build_receipts_docx(문서번호: str, 행사명: str, receipts: list[Receip
 
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    text(title.add_run(f"{문서번호}  {행사명}"), 15, bold=True)
+    text(title.add_run("  ".join(x for x in (문서번호, 행사명) if x) or "영수증 첨부"), 15, bold=True)
     sub = doc.add_paragraph()
     sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
     total = sum(r.금액 or 0 for r in receipts)

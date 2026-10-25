@@ -11,6 +11,7 @@ from core.paths import TEMPLATES_DIR
 from core.report import build_report
 from hwpx.fill import REPORT_CELLS, REQUEST_CELLS, REPORT_TEMPLATE, REQUEST_TEMPLATE, render
 from hwpx.layout import SENSITIVE
+from hwpx.reader import read_document
 from hwpx.text import read_cells
 from tests.conftest import TODAY
 
@@ -93,19 +94,20 @@ def test_special_characters_escaped(tmp_path):
     assert cells[REQUEST_CELLS["행사명"]] == ["A & B <행사>"]
 
 
-def test_report_from_settings_and_amounts(settings, tmp_path):
-    """장부 없이: 신청액 300,000 · 실사용 350,000 → 본당 300,000, 자체 50,000, A 350,000, 잔액 0. 기안자는 설정."""
-    report = ReportDoc(월=10, 행사명="10월 교리 준비비", 작성일=date(2026, 10, 24), 문서번호="(집)2026-054",
-                       연결문서번호="(예)2026-053", 경과보고="10월 교리 준비물을 구입하였습니다.",
-                       세부내역=[LineItem(계정과목="교리준비비", 내용="교리 준비물", 단가=350_000)])
-    build = build_report(report, settings, 300_000)
-    assert build.errors == []
-    rep = read_cells(render(build.doc, tmp_path / "r.hwpx"))
-    assert rep[REPORT_CELLS["문서번호"]] == ["(집)2026 - 054"]
-    assert rep[REPORT_CELLS["기안자"]][0].startswith("정연재 레오")  # settings 기본값
-    assert rep[REPORT_CELLS["본당보조"]] == ["300,000원"] and rep[REPORT_CELLS["자체예산"]] == [" 50,000원"]
-    assert rep[REPORT_CELLS["예산A"]] == ["350,000원(A)"] and rep[REPORT_CELLS["잔액"]] == ["0원"]
-    assert rep[REPORT_CELLS["작성일"]] == [" 2026년 10월 24일"]
+def test_report_only_body_total_and_settings(settings, tmp_path):
+    """경과보고·합계(B)·설정값만 채우고 나머지는 빈 양식 그대로."""
+    settings.연락처.기안자, settings.계좌.예금주 = "010-0000-0001", "홍길동"
+    doc = settings.fill_contacts(build_report(settings, "10월 교리 간식을 다음과 같이 사용하였습니다.", 55_000))
+    path = render(doc, tmp_path / "r.hwpx")
+    rep = read_cells(path)
+    assert rep[REPORT_CELLS["합계B"]] == ["55,000원"]
+    assert rep[REPORT_CELLS["기안자"]][0].startswith("정연재 레오") and rep[REPORT_CELLS["주관단체"]] == ["초등부 교사회"]
+    assert rep[REPORT_CELLS["기안자연락처"]] == ["010-0000-0001"] and rep[REPORT_CELLS["예금주"]] == ["홍길동"]
+    blank = read_cells(REPORT_TEMPLATE)
+    for key in ("문서번호", "작성일", "행사명", "일시", "인원", "본당보조", "자체예산", "예산A", "잔액"):
+        assert rep[REPORT_CELLS[key]] == blank[REPORT_CELLS[key]], key  # 빈 양식 그대로
+    back = read_document(path).doc
+    assert back.경과보고 == "10월 교리 간식을 다음과 같이 사용하였습니다." and back.세부내역 == []
 
 
 def test_fill_contacts_from_settings(settings, tmp_path):

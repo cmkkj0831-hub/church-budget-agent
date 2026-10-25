@@ -6,7 +6,7 @@ secrets(기본 .streamlit/secrets.toml, 같은 이름의 환경변수가 우선)
   1. GitHub: 저장소·DATA_BRANCH 읽기(settings.json), 임시 브랜치 쓰기·삭제
   2. 설정: settings.json 읽기, 연락처·계좌 칸이 채워졌는지(값은 출력하지 않음)
   3. Claude API 1회 호출(모델명·토큰)
-  4. 집행보고서 hwpx 생성·읽기 왕복(금액·설정의 연락처·계좌가 문서에 들어가는지 포함), 영수증 첨부 docx
+  4. 집행보고서 hwpx 생성·읽기 왕복(경과보고·합계·설정의 연락처·계좌가 들어가는지), 영수증 첨부 docx
 """
 import argparse
 import os
@@ -140,30 +140,26 @@ def claude(s: dict, data_dir: Path) -> None:
 
 @step("보고서 왕복")
 def report_round_trip(data_dir: Path) -> None:
-    from core.models import LineItem, Receipt, ReportDoc
+    from core.models import Receipt
     from core.report import build_report
     from hwpx.fill import render
     from hwpx.reader import read_document
     from hwpx.receipts import build_receipts_docx
     from PIL import Image
     s = load_settings(data_dir)
-    y = s.현재연도
-    draft = ReportDoc(월=12, 행사명="점검용 보고서", 문서번호=f"(집){y}-999", 연결문서번호=f"(예){y}-998",
-                      작성일=date(y, 12, 1), 시작=datetime(y, 12, 1, 10), 종료=datetime(y, 12, 1, 12),
-                      인원_총=10, 경과보고="점검", 세부내역=[LineItem(계정과목="점검", 내용="항목", 단가=3_000)])
-    doc = s.fill_contacts(build_report(draft, s, 5_000).doc)
+    body = "점검용 경과보고입니다.\n10월 1일 점검 : 3,000원"
+    doc = s.fill_contacts(build_report(s, body, 3_000))
     with tempfile.TemporaryDirectory() as d:
         res = read_document(render(doc, Path(d) / "check.hwpx"))
         img = Path(d) / "r.png"
         Image.new("RGB", (60, 80), "white").save(img)
-        docx = build_receipts_docx(doc.문서번호, doc.행사명, [Receipt(순번=1, 이미지=str(img), 금액=3_000)],
-                                   Path(d) / "r.docx").stat().st_size
+        docx = build_receipts_docx("", "", [Receipt(순번=1, 이미지=str(img), 금액=3_000)], Path(d) / "r.docx").stat().st_size
     back = res.doc
-    keys = ("행사명", "문서번호", "합계B", "본당보조", "잔액", "인원_총", "기안자연락처", "은행명", "계좌번호", "예금주")
-    ok = all(getattr(back, k) == getattr(doc, k) for k in keys)
-    record("보고서 왕복", ok and not res.failures and docx > 0,
-           f"합계 {doc.합계B:,}원·잔액 {doc.잔액:,}원·인원·연락처·계좌 생성·읽기 {'일치' if ok else '불일치'}, 영수증 docx {docx:,}바이트"
-           + (f", 못 읽은 칸 {res.failures}" if res.failures else ""))
+    keys = ("경과보고", "합계B", "기안자", "주관단체", "기안자연락처", "은행명", "계좌번호", "예금주")
+    ok = all(getattr(back, k) == getattr(doc, k) for k in keys) and back.본당보조 is None
+    record("보고서 왕복", ok and docx > 0,
+           f"경과보고·합계 {doc.합계B:,}원·설정값(연락처·계좌 포함) 생성·읽기 {'일치' if ok else '불일치'}, "
+           f"영수증 docx {docx:,}바이트")
 
 
 def table() -> str:

@@ -22,7 +22,7 @@ def test_check_cloud_local_mode_reads_only(tmp_path):
     r = subprocess.run([PY, str(ROOT / "scripts" / "check_cloud.py"), "--secrets", str(secrets), "--skip-claude"],
                        capture_output=True, text=True, env=env, cwd=ROOT)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "비어 있는 칸: 기안단체장 연락처, 은행명" in r.stdout and "연락처·계좌 생성·읽기 일치" in r.stdout
+    assert "비어 있는 칸: 기안단체장 연락처, 은행명" in r.stdout and "설정값(연락처·계좌 포함) 생성·읽기 일치" in r.stdout
     assert any(ln.startswith("보고서 왕복") and "| 통과" in ln for ln in r.stdout.splitlines())
     assert "0000777" not in r.stdout and "홍길동" not in r.stdout and "sk-test" not in r.stdout  # 값 출력 없음
     assert before == {f: f.read_bytes() for f in data.rglob("*") if f.is_file()}  # 데이터는 그대로

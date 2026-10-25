@@ -8,7 +8,6 @@ import pytest
 
 from core.models import LineItem, ReportDoc, RequestDoc
 from core.paths import TEMPLATES_DIR
-from core.report import build_report
 from hwpx.fill import REPORT_TEMPLATE, REQUEST_TEMPLATE, item_rows, render
 from hwpx.layout import REPORT, resolve
 from hwpx.reader import UnknownFormError, read_document
@@ -44,9 +43,14 @@ def built_request(n):
 
 
 def built_report(settings, n):
-    doc = ReportDoc(**full_fields(), 문서번호="(집)2026-054", 연결문서번호="(예)2026-052",
-                    경과보고="다음과 같이 사용하였습니다.\n- 식대", 건의사항="다음 달 인원 증가", 세부내역=items(n))
-    return build_report(doc, settings, 540_000).doc
+    """보고서 양식 왕복용: 세부내역·금액 칸까지 모두 채운 문서(앱은 경과보고·합계만 채우지만 양식은 전부 다룬다)."""
+    its = [i.model_copy(update={"금액": i.단가 * i.수량}) for i in items(n)]
+    used = sum(i.금액 for i in its)
+    applied = 540_000
+    subsidy, own = min(applied, used), max(0, used - applied)
+    return ReportDoc(**full_fields(), 문서번호="(집)2026-054", 연결문서번호="(예)2026-052",
+                     경과보고="다음과 같이 사용하였습니다.\n- 식대", 건의사항="다음 달 인원 증가", 세부내역=its,
+                     본당보조=subsidy, 자체예산=own, 합계B=used, 예산A=applied + own, 잔액=applied - subsidy)
 
 
 IGNORED = {"연결문서번호", "양식", "행사유형", "계좌_override", "사업ID"}
@@ -128,15 +132,11 @@ def test_group_mode_merges_largest_account_first():
                                         "1번 항목 식대", "2번 항목 식대", "3번 항목 식대"]
 
 
-def test_group_mode_impossible(settings):
+def test_group_mode_impossible():
     its = [LineItem(계정과목=f"계정{i}", 내용=f"항목{i}", 단가=1_000) for i in range(8)]
     doc = ReportDoc(월=8, 사업ID="P11", 행사명="8월 교사회 운영비", 세부내역=its)
     with pytest.raises(ValueError):
         item_rows(doc, "group")
-    settings.hwpx_row_mode = "group"
-    assert any("묶기(group)로 맞출 수 없습니다" in e for e in build_report(doc, settings, 0).errors)
-    settings.hwpx_row_mode = "clone"
-    assert build_report(doc, settings, 0).errors == []
 
 
 # ---------------------------------------------------------------- reader

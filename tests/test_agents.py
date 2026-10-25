@@ -12,7 +12,7 @@ from agents.receipt_agent import ReceiptExtraction
 from core.models import ReportDoc
 from hwpx.fill import render
 from hwpx.reader import read_document
-from core.report import build_report
+from core.report import build_report, receipts_total
 from types import SimpleNamespace
 
 from tests.fakes import FakeClient, text_response, tool_response, usage
@@ -177,9 +177,7 @@ def test_report_draft_with_note(settings):
     prompt = fake.prompt()
     assert report_agent.FORMAT_EXAMPLE.split("\n")[1] in prompt
     assert "[행사 정보 — 회계담당 입력]\n행사명: 8월 교사회 운영비" in prompt and "suggestion" not in prompt
-    # 보고서 금액은 core 규칙: 신청 540,000, 실사용 335,400 → 반납 204,600
-    doc = build_report(ReportDoc(월=8, 행사명="8월 교사회 운영비", 세부내역=comp.세부내역), settings, 540_000).doc
-    assert (doc.본당보조, doc.자체예산, doc.합계B, doc.예산A, doc.잔액) == (335_400, 0, 335_400, 540_000, 204_600)
+    assert receipts_total(RECEIPTS) == 335_400  # 합계(B) = 영수증 금액 합(읽지 못한 4번은 0)
 
 
 def test_report_draft_without_note(settings):
@@ -192,16 +190,16 @@ def test_report_draft_without_note(settings):
     assert "[행사 정보 — 회계담당 입력]\n(없음)" in fake.prompt()
 
 
-@pytest.mark.parametrize("applied, used, expected", [
-    (500_000, 300_000, (300_000, 0, 300_000, 500_000, 200_000)),   # 덜 씀: 반납
-    (300_000, 350_000, (300_000, 50_000, 350_000, 350_000, 0)),    # 더 씀: 초과분 자체
-    (0, 10_000, (0, 10_000, 10_000, 10_000, 0)),                   # 신청 없음
-])
-def test_report_amount_rules(settings, applied, used, expected):
-    from core.models import LineItem
-    doc = build_report(ReportDoc(월=10, 행사명="x", 세부내역=[LineItem(내용="a", 단가=used)]), settings, applied).doc
-    assert (doc.본당보조, doc.자체예산, doc.합계B, doc.예산A, doc.잔액) == expected
-    assert doc.예산A - doc.합계B == doc.잔액 and doc.본당보조 + doc.자체예산 == doc.합계B
+def test_report_without_inputs(settings):
+    """앱은 영수증만 받는다: 행사 정보·메모 없이 초안을 쓰고, 문서는 경과보고·합계·설정값만."""
+    out = _report_output(경과보고_줄=[{"날짜": None, "항목": "식대", "영수증번호": [1, 2], "참가자": [],
+                                    "노트_언급": False, "노트_날짜": None, "노트_금액": None}])
+    comp = report_agent.compose_report(settings, "", RECEIPTS[:2], client=FakeClient(tool_response("submit_report_draft", out)))
+    doc = build_report(settings, comp.경과보고, receipts_total(RECEIPTS[:2]))
+    assert doc.합계B == 292_100 and doc.경과보고.endswith("8월 15일 식대 : 292,100원")
+    assert (doc.본당보조, doc.자체예산, doc.예산A, doc.잔액, doc.문서번호, doc.작성일, doc.시작, doc.세부내역) == \
+        (None, None, None, None, "", None, None, [])
+    assert (doc.기안자, doc.주관단체, doc.장소) == ("정연재 레오", "초등부 교사회", "개포동성당")
 
 
 def test_participant_matching():
