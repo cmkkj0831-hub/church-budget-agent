@@ -112,6 +112,17 @@ def test_report_only_body_total_and_settings(settings, tmp_path):
     assert back.경과보고 == "10월 교리 간식을 다음과 같이 사용하였습니다." and back.세부내역 == []
 
 
+def test_report_line_items_filled(settings, tmp_path):
+    items = [LineItem(계정과목="식대", 내용="소풍 점심 식사", 단가=186_000, 비고="영수증 1"),
+             LineItem(계정과목="행사비", 내용="에버랜드 입장권", 단가=420_000, 비고="영수증 2, 3")]
+    doc = build_report(settings, "본문", 606_000, "전례부 소풍", 세부내역=items)
+    path = render(doc, tmp_path / "r.hwpx")
+    back = read_document(path).doc
+    assert [(i.계정과목, i.내용, i.단가, i.수량, i.금액, i.비고) for i in back.세부내역] == [
+        ("식대", "소풍 점심 식사", 186_000, 1, 186_000, "영수증 1"), ("행사비", "에버랜드 입장권", 420_000, 1, 420_000, "영수증 2, 3")]
+    assert back.합계B == 606_000
+
+
 def test_filled_text_is_black(settings, tmp_path):
     """양식 칸의 안내 글씨는 빨강·파랑이지만 채운 글자는 같은 모양의 검정 복제본을 쓴다(양식 원래 글씨는 그대로)."""
     settings.계좌.예금주 = "홍길동"

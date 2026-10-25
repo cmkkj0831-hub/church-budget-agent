@@ -127,7 +127,10 @@ def test_receipts_only_to_report(data, monkeypatch):
     assert (doc.행사명, doc.목적) == ("10월 초등부 교리 후 간식", "교리에 참여한 어린이 격려")  # 입력 그대로
     assert (doc.시작.date(), doc.종료.date(), doc.박, doc.일) == (date(2026, 10, 20), date(2026, 10, 21), 1, 2)
     assert (doc.인원_총, doc.인원_남, doc.인원_여) == (40, 18, None)
-    assert (doc.문서번호, doc.작성일, doc.세부내역, doc.본당보조, doc.잔액) == ("", None, [], None, None)
+    assert [(i.계정과목, i.내용, i.단가, i.수량, i.금액, i.비고) for i in doc.세부내역] == \
+        [("간식비", "교리 간식", 55_000, 1, 55_000, "영수증 1, 2")]
+    assert sum(i.금액 for i in doc.세부내역) == doc.합계B
+    assert (doc.문서번호, doc.작성일, doc.본당보조, doc.잔액) == ("", None, None, None)
     with zipfile.ZipFile(io.BytesIO(at.session_state["rep_result"]["zip"])) as z:
         assert sorted(z.namelist()) == ["집행보고서_20261020.hwpx", "집행보고서_20261020_영수증첨부.docx"]
     assert before == {f: f.read_bytes() for f in data.rglob("*") if f.is_file()}  # 아무것도 저장하지 않는다

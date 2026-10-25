@@ -144,6 +144,11 @@ def match_participant(name: str, roster: list[str]) -> str | None:
     return hits[0] if len(hits) == 1 else None
 
 
+def receipt_note(nos: list[int]) -> str:
+    """세부내역 비고: 첨부 docx의 영수증 번호(예: '영수증 1, 3')."""
+    return "영수증 " + ", ".join(str(n) for n in sorted(nos))
+
+
 def compose(out: dict, receipts: list[ReceiptExtraction], roster: list[str], year: int,
             has_note: bool) -> ReportComposition:
     by_no = {r.순번: r for r in receipts}
@@ -174,11 +179,13 @@ def compose(out: dict, receipts: list[ReceiptExtraction], roster: list[str], yea
                 nos.append(n)
                 used.add(n)
         if nos:
-            items.append(LineItem(계정과목=it.get("계정과목") or "", 내용=it["내용"], 단가=amount(nos), 수량=1))
+            items.append(LineItem(계정과목=it.get("계정과목") or "", 내용=it["내용"], 단가=amount(nos), 수량=1,
+                                  비고=receipt_note(nos)))
     for r in receipts:
         if r.순번 not in used:
             warnings.append(f"영수증 {r.순번}번({r.상호})이 세부내역에 없어 따로 넣음")
-            items.append(LineItem(계정과목="기타", 내용=r.품목요약 or r.상호, 단가=r.금액 or 0, 수량=1))
+            items.append(LineItem(계정과목="기타", 내용=r.품목요약 or r.상호, 단가=r.금액 or 0, 수량=1,
+                                  비고=receipt_note([r.순번])))
 
     # 경과보고 줄
     lines, mentioned, choices = [], set(), []

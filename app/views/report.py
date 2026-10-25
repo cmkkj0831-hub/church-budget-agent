@@ -1,6 +1,6 @@
 """🧾 집행 보고서: 행사·목적(자연어)·일시·참가인원과 영수증 이미지를 받아 Claude가 영수증을 읽고, 행사·목적과 올해 사업계획
 (시기·사업명·세부내역) 맥락에 맞춰 경과보고를 써서 hwpx를 만든다. 입력값은 양식의 해당 칸에 그대로(박·일은 일시로 계산).
-채우는 칸은 행사명·목적·일시·인원·경과보고·합계(B)와 설정값뿐, 나머지는 빈칸. 결과: 보고서 hwpx + 영수증 첨부 docx(zip) 내려받기.
+채우는 칸은 행사명·목적·일시·인원·경과보고·세부내역·합계(B)와 설정값뿐, 나머지는 빈칸. 결과: 보고서 hwpx + 영수증 첨부 docx(zip) 내려받기.
 아무것도 저장하지 않는다."""
 import lib
 import pandas as pd
@@ -40,6 +40,8 @@ def show_result(r) -> None:
         st.caption(f"참고한 사업계획: {r['business']}")
     st.markdown("**경과보고**")
     st.text(r["body"])
+    st.markdown("**세부내역**")
+    st.dataframe(pd.DataFrame(r["items"]), hide_index=True, width="stretch")
     st.markdown("**읽은 영수증**")
     st.dataframe(pd.DataFrame(r["rows"]), hide_index=True, width="stretch")
     for w in r["warnings"]:
@@ -69,12 +71,15 @@ if st.button("보고서 만들기", type="primary", disabled=not ss.get("rep_fil
         st.error(f"보고서를 만들지 못했습니다: {e}")
         st.stop()
     total = receipts_total(receipts)
-    doc = build_report(S, comp.경과보고, total, ss.get("rep_event", ""), ss.get("rep_purpose", ""), **event)
+    doc = build_report(S, comp.경과보고, total, ss.get("rep_event", ""), ss.get("rep_purpose", ""), **event,
+                       세부내역=comp.세부내역)
     stem = file_stem(receipts, lib.today())
     files = {f"{stem}.hwpx": lib.render_hwpx(doc),
              f"{stem}_영수증첨부.docx": lib.receipts_docx("", "", [r.to_receipt() for r in receipts])}
     ss.rep_result = {
         "zip": lib.zip_bytes(files), "zip_name": f"{stem}.zip", "files": list(files), "total": total,
         "body": comp.경과보고, "warnings": comp.warnings, "business": comp.사업명,
+        "items": [{"계정과목": i.계정과목, "정산세부내용": i.내용, "단가": i.단가, "수량": i.수량, "금액": i.금액,
+                   "비고": i.비고} for i in doc.세부내역],
         "rows": [{"순번": r.순번, "날짜": r.날짜, "상호": r.상호_확정, "금액": r.금액, "품목": r.품목요약} for r in receipts]}
     st.rerun()
