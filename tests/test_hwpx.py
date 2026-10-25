@@ -8,7 +8,8 @@ import pytest
 
 from core.models import AccountInfo, LineItem, ReportDoc, RequestDoc
 from core.paths import TEMPLATES_DIR
-from hwpx.fill import REPORT_CELLS, REQUEST_CELLS, REPORT_TEMPLATE, REQUEST_TEMPLATE, render, render_committed
+from core.report import build_report
+from hwpx.fill import REPORT_CELLS, REQUEST_CELLS, REPORT_TEMPLATE, REQUEST_TEMPLATE, render
 from hwpx.layout import SENSITIVE
 from hwpx.text import read_cells
 from tests.conftest import TODAY
@@ -92,27 +93,24 @@ def test_special_characters_escaped(tmp_path):
     assert cells[REQUEST_CELLS["행사명"]] == ["A & B <행사>"]
 
 
-def test_post_settlement_files(ledger, tmp_path):
-    report = ReportDoc(월=10, 사업ID="P12", 행사명="10월 교리 준비비", 작성일=date(2026, 10, 24),
-                       경과보고="10월 교리 준비물을 구입하였습니다.",
+def test_report_from_settings_and_amounts(settings, tmp_path):
+    """장부 없이: 신청액 300,000 · 실사용 350,000 → 본당 300,000, 자체 50,000, A 350,000, 잔액 0. 기안자는 설정."""
+    report = ReportDoc(월=10, 행사명="10월 교리 준비비", 작성일=date(2026, 10, 24), 문서번호="(집)2026-054",
+                       연결문서번호="(예)2026-053", 경과보고="10월 교리 준비물을 구입하였습니다.",
                        세부내역=[LineItem(계정과목="교리준비비", 내용="교리 준비물", 단가=350_000)])
-    build = ledger.build_post_settlement(report, today=TODAY)
-    rows = ledger.commit(build)
-    paths = render_committed(build.docs, rows, tmp_path / "out")
-    assert [p.relative_to(tmp_path / "out").as_posix() for p in paths] == [
-        "10월/2_10월 교리 준비비_신청서.hwpx", "10월/3_10월 교리 준비비_보고서.hwpx"]
-    req, rep = (read_cells(p) for p in paths)
-    assert req[REQUEST_CELLS["금번신청액"]] == ["309,855"]
-    assert req[REQUEST_CELLS["문서번호"]] == ["(예)2026 - 053"]
-    assert req[REQUEST_CELLS["기안자"]][0].startswith("정연재 레오")  # settings 기본값
-    assert rep[REPORT_CELLS["자체예산"]] == [" 40,145원"]
+    build = build_report(report, settings, 300_000)
+    assert build.errors == []
+    rep = read_cells(render(build.doc, tmp_path / "r.hwpx"))
+    assert rep[REPORT_CELLS["문서번호"]] == ["(집)2026 - 054"]
+    assert rep[REPORT_CELLS["기안자"]][0].startswith("정연재 레오")  # settings 기본값
+    assert rep[REPORT_CELLS["본당보조"]] == ["300,000원"] and rep[REPORT_CELLS["자체예산"]] == [" 50,000원"]
     assert rep[REPORT_CELLS["예산A"]] == ["350,000원(A)"] and rep[REPORT_CELLS["잔액"]] == ["0원"]
-    assert rep[REPORT_CELLS["작성일"]] == req[REQUEST_CELLS["작성일"]] == [" 2026년 10월 24일"]
+    assert rep[REPORT_CELLS["작성일"]] == [" 2026년 10월 24일"]
 
 
-def test_fill_contacts_from_settings(ledger, tmp_path):
+def test_fill_contacts_from_settings(settings, tmp_path):
     """연락처 = 설정, 계좌 칸별 = 문서별 덮어쓰기(빈 칸 제외) > 설정. 설정이 비면 문서도 빈칸."""
-    s = ledger.settings.model_copy(deep=True)
+    s = settings.model_copy(deep=True)
     s.연락처.기안자 = "010-0000-0000"
     s.계좌 = AccountInfo(은행명="기본은행", 계좌번호="000-0", 예금주="기본예금주")
     out = s.fill_contacts(CHILDRENS_REQUEST)
@@ -124,5 +122,5 @@ def test_fill_contacts_from_settings(ledger, tmp_path):
     assert CHILDRENS_REQUEST.기안자연락처 == ""  # 원본은 그대로
     cells = read_cells(render(out, tmp_path / "c.hwpx"))
     assert cells[REQUEST_CELLS["예금주"]][0].strip() == "덮어쓰기"
-    blank = ledger.settings.model_copy(deep=True).fill_contacts(doc)  # 설정 비어 있음
+    blank = settings.model_copy(deep=True).fill_contacts(doc)  # 설정 비어 있음
     assert (blank.기안자연락처, blank.은행명, blank.계좌번호, blank.예금주) == ("", "", "", "덮어쓰기")

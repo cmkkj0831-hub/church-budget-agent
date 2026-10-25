@@ -2,7 +2,6 @@
 streamlit==1.66.1
 pandas==3.1.0
 pydantic==2.14.1
-openpyxl==3.1.5
 olefile==0.47
 python-docx==1.2.0
 pillow==13.0.0

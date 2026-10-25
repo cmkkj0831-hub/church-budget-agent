@@ -8,13 +8,7 @@ DATA_DIR = ROOT / "data"
 TEMPLATES_DIR = ROOT / "templates"
 OUT_DIR = ROOT / "out"
 
-SETTINGS_JSON = DATA_DIR / "settings.json"           # 현재 회계연도 포함, 민감값 제외
-YEAR_FILES = ("ledger.csv", "plan.csv", "plan_info.csv", "issues.csv", "history.csv", "usage.csv")
-
-
-def year_dir(year: int, data_dir=DATA_DIR) -> Path:
-    """data/{연도}/ — 장부·사업계획·이슈·이력·사용량."""
-    return Path(data_dir) / str(year)
+SETTINGS_JSON = DATA_DIR / "settings.json"           # 설정(현재 회계연도, 기안자, 연락처·계좌 등)
 
 
 def nfc(s) -> str:

@@ -10,12 +10,12 @@ from datetime import datetime
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from core.models import MAX_LINE_ITEMS, DocBase, LedgerRow, ReportDoc, RequestDoc, RowMode
+from core.models import MAX_LINE_ITEMS, DocBase, ReportDoc, RequestDoc, RowMode
 from hwpx.layout import ITEM_KEYS, REPORT, REPORT_CELLS, REQUEST, REQUEST_CELLS, Resolved, resolve
 from hwpx.table import expand_item_rows
 from hwpx.text import cells_from_xml, extract_text
 
-__all__ = ["render", "render_committed", "output_path", "item_rows", "REQUEST_CELLS", "REPORT_CELLS",
+__all__ = ["render", "item_rows", "REQUEST_CELLS", "REPORT_CELLS",
            "REQUEST_TEMPLATE", "REPORT_TEMPLATE"]
 
 REQUEST_TEMPLATE = REQUEST.template
@@ -257,15 +257,3 @@ def _write_preview(path: Path) -> None:
             data = text.encode("utf-8") if info.filename == PREVIEW else src.read(info)
             dst.writestr(info, data, compress_type=info.compress_type)
     tmp.replace(path)
-
-
-def output_path(out_dir, row: LedgerRow) -> Path:
-    """out/{월}/{파일명} — 월 폴더는 사업이 속한 월."""
-    return Path(out_dir) / row.월 / row.파일명
-
-
-def render_committed(docs: list, rows: list[LedgerRow], out_dir, row_mode: RowMode = "clone") -> list[Path]:
-    """commit으로 장부에 추가된 행과 같은 순서의 문서를 파일로 만든다."""
-    if len(docs) != len(rows):
-        raise ValueError("문서와 장부 행 수가 다름")
-    return [render(d, output_path(out_dir, r), row_mode) for d, r in zip(docs, rows)]

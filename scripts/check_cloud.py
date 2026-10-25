@@ -3,10 +3,10 @@
 secrets(기본 .streamlit/secrets.toml, 같은 이름의 환경변수가 우선)로 아래를 차례로 점검하고 표로 보여 준다.
 비밀값은 출력하지 않는다. 운영 데이터(DATA_BRANCH)는 읽기만 하고, 쓰기 시험은 임시 브랜치에서 한 뒤 지운다.
 
-  1. GitHub: 저장소·DATA_BRANCH 읽기(장부 행 수 등), 임시 브랜치 쓰기·삭제
+  1. GitHub: 저장소·DATA_BRANCH 읽기(settings.json), 임시 브랜치 쓰기·삭제
   2. 설정: settings.json 읽기, 연락처·계좌 칸이 채워졌는지(값은 출력하지 않음)
   3. Claude API 1회 호출(모델명·토큰)
-  4. hwpx 생성·읽기 왕복(설정의 연락처·계좌가 문서에 들어가는지 포함), 연간 결산 xlsx 내보내기
+  4. 집행보고서 hwpx 생성·읽기 왕복(금액·설정의 연락처·계좌가 문서에 들어가는지 포함), 영수증 첨부 docx
 """
 import argparse
 import os
@@ -19,9 +19,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.issues import IssueBook  # noqa: E402
-from core.ledger import Ledger, load_settings, read_csv  # noqa: E402
 from core.paths import DATA_DIR  # noqa: E402
+from core.report import load_settings  # noqa: E402
 from core.secrets import SECRETS_TOML, load_secrets  # noqa: E402
 
 KEYS = ("ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GITHUB_REPO", "DATA_BRANCH", "APP_ENV")
@@ -82,14 +81,12 @@ def github_read(s: dict) -> Path | None:
     if branch == repo.default_branch:
         notes.append(f"⚠️ DATA_BRANCH가 배포 브랜치({branch})와 같음 → 저장할 때마다 앱이 재시작됨")
     if not repo.private:
-        notes.append("⚠️ 공개 저장소 — 계좌·연락처·교사명단·장부가 공개됨. 비공개로 바꾸세요")
+        notes.append("⚠️ 공개 저장소 — 계좌·연락처·교사명단이 공개됨. 비공개로 바꾸세요")
     ws = GitHubStorage(repo, branch).checkout()
     settings = load_settings(ws.path)
-    y = settings.현재연도
-    L = Ledger.load(ws.path, y)
     record("GitHub 읽기", not notes,
-           f"{repo.full_name}@{branch}: 파일 {len(ws.content)}개, {y}년 장부 {len(L.rows)}행, "
-           f"다음 문서번호 {L.next_doc_number()}" + (" / " + " / ".join(notes) if notes else ""))
+           f"{repo.full_name}@{branch}: 파일 {len(ws.content)}개, settings.json 읽음({settings.현재연도} 회계연도)"
+           + (" / " + " / ".join(notes) if notes else ""))
     return ws.path
 
 
@@ -141,40 +138,32 @@ def claude(s: dict, data_dir: Path) -> None:
            f"{r.usage.output_tokens}, 키 끝 4자리 {key[-4:]}")
 
 
-@step("hwpx 왕복")
-def hwpx_round_trip(data_dir: Path) -> None:
-    from core.models import LineItem, RequestDoc
+@step("보고서 왕복")
+def report_round_trip(data_dir: Path) -> None:
+    from core.models import LineItem, Receipt, ReportDoc
+    from core.report import build_report
     from hwpx.fill import render
     from hwpx.reader import read_document
-    L = Ledger.load(data_dir).copy()  # 메모리 사본 — 저장하지 않는다
-    y = L.year
-    draft = RequestDoc(월=12, 사업ID=next(iter(L.plan)), 행사명="점검용 문서", 작성일=date(y, 12, 1),
-                       시작=datetime(y, 12, 1, 10), 종료=datetime(y, 12, 1, 12), 장소="점검", 목적="점검",
-                       세부내역=[LineItem(계정과목="점검", 내용="항목", 단가=1_000, 수량=3)])
-    doc = L.settings.fill_contacts(L.build_request(draft, today=date(y, 12, 1)).docs[0])
+    from hwpx.receipts import build_receipts_docx
+    from PIL import Image
+    s = load_settings(data_dir)
+    y = s.현재연도
+    draft = ReportDoc(월=12, 행사명="점검용 보고서", 문서번호=f"(집){y}-999", 연결문서번호=f"(예){y}-998",
+                      작성일=date(y, 12, 1), 시작=datetime(y, 12, 1, 10), 종료=datetime(y, 12, 1, 12),
+                      인원_총=10, 경과보고="점검", 세부내역=[LineItem(계정과목="점검", 내용="항목", 단가=3_000)])
+    doc = s.fill_contacts(build_report(draft, s, 5_000).doc)
     with tempfile.TemporaryDirectory() as d:
-        res = read_document(render(doc, Path(d) / "check.hwpx"), 사업ID=doc.사업ID)
+        res = read_document(render(doc, Path(d) / "check.hwpx"))
+        img = Path(d) / "r.png"
+        Image.new("RGB", (60, 80), "white").save(img)
+        docx = build_receipts_docx(doc.문서번호, doc.행사명, [Receipt(순번=1, 이미지=str(img), 금액=3_000)],
+                                   Path(d) / "r.docx").stat().st_size
     back = res.doc
-    keys = ("행사명", "합계", "신청누계액", "문서번호", "기안자연락처", "기안단체장연락처", "은행명", "계좌번호", "예금주")
+    keys = ("행사명", "문서번호", "합계B", "본당보조", "잔액", "인원_총", "기안자연락처", "은행명", "계좌번호", "예금주")
     ok = all(getattr(back, k) == getattr(doc, k) for k in keys)
-    record("hwpx 왕복", ok and not res.failures,
-           f"{doc.문서번호} 합계 {doc.합계:,}원·연락처·계좌 생성·읽기 {'일치' if ok else '불일치'}"
+    record("보고서 왕복", ok and not res.failures and docx > 0,
+           f"합계 {doc.합계B:,}원·잔액 {doc.잔액:,}원·인원·연락처·계좌 생성·읽기 {'일치' if ok else '불일치'}, 영수증 docx {docx:,}바이트"
            + (f", 못 읽은 칸 {res.failures}" if res.failures else ""))
-
-
-@step("xlsx 내보내기")
-def xlsx_export(data_dir: Path) -> None:
-    from openpyxl import load_workbook
-
-    from core.export import export_annual_xlsx
-    L, B = Ledger.load(data_dir), IssueBook.load(data_dir)
-    y = L.year
-    info, usage = data_dir / str(y) / "plan_info.csv", data_dir / str(y) / "usage.csv"
-    with tempfile.TemporaryDirectory() as d:
-        path = export_annual_xlsx(L, B, read_csv(info) if info.exists() else [],
-                                  read_csv(usage) if usage.exists() else [], Path(d) / "check.xlsx")
-        sheets = load_workbook(path, read_only=True).sheetnames
-    record("xlsx 내보내기", len(sheets) >= 4, f"시트 {len(sheets)}개: {', '.join(sheets)}")
 
 
 def table() -> str:
@@ -201,8 +190,7 @@ def main() -> int:
         record("Claude API", None, "--skip-claude")
     else:
         claude(s, data_dir)
-    hwpx_round_trip(data_dir)
-    xlsx_export(data_dir)
+    report_round_trip(data_dir)
     print(table())
     return 1 if any(r[1] == "실패" for r in rows) else 0
 

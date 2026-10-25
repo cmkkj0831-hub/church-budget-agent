@@ -252,27 +252,15 @@ def call_tool(client, model: str, system: str, content: list | str, spec: dict,
     raise AgentError(f"`{spec['name']}` 도구 호출을 받지 못함")
 
 
-_usage_hook = None
+def model_of(settings) -> str:
+    return getattr(settings, "모델", None) or DEFAULT_MODEL
 
 
-def set_usage_hook(fn) -> None:
-    """모든 호출의 CallInfo를 받을 함수(앱이 data/{연도}/usage.csv에 기록). None이면 끔."""
-    global _usage_hook
-    _usage_hook = fn
+def fallbacks_of(settings) -> str:
+    return getattr(settings, "llm_fallbacks", "off") or "off"
 
 
-def model_of(ledger) -> str:
-    return getattr(ledger.settings, "모델", None) or DEFAULT_MODEL
-
-
-def fallbacks_of(ledger) -> str:
-    return getattr(ledger.settings, "llm_fallbacks", "off") or "off"
-
-
-def call(ledger, client, system, content, spec, effort: str = "medium") -> ToolCall:
+def call(settings, client, system, content, spec, effort: str = "medium") -> ToolCall:
     """settings의 모델·fallbacks로 call_tool."""
-    result = call_tool(client or make_client(), model_of(ledger), system, content, spec, effort=effort,
-                       fallbacks=fallbacks_of(ledger))
-    if _usage_hook is not None:
-        _usage_hook(result.info)
-    return result
+    return call_tool(client or make_client(), model_of(settings), system, content, spec, effort=effort,
+                     fallbacks=fallbacks_of(settings))

@@ -3,9 +3,8 @@ from datetime import date
 
 import pytest
 
-from core.issues import IssueBook
-from core.ledger import Ledger
 from core.paths import DATA_DIR
+from core.report import load_settings
 
 TODAY = date(2026, 10, 23)
 
@@ -36,10 +35,5 @@ def data_dir(tmp_path):
 
 
 @pytest.fixture
-def ledger(data_dir):
-    return Ledger.load(data_dir)
-
-
-@pytest.fixture
-def book(data_dir):
-    return IssueBook.load(data_dir)
+def settings(data_dir):
+    return load_settings(data_dir)

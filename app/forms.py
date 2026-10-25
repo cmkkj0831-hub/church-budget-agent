@@ -1,11 +1,8 @@
-"""설정 화면과 회계연도 전환 마법사가 함께 쓰는 입력 묶음."""
-from pathlib import Path
-
+"""설정 화면 입력 묶음: 기본 정보·연락처·계좌·교사명단, API 키 상태."""
 import lib
 import streamlit as st
 
 from core.models import Settings
-from core.usage import load_usage
 
 
 def basic_form(s: Settings, key: str) -> dict | None:
@@ -13,8 +10,9 @@ def basic_form(s: Settings, key: str) -> dict | None:
     with st.form(f"{key}_basic"):
         st.markdown("**기본 정보**")
         b = s.기본정보
-        c = st.columns(3)
+        c = st.columns(4)
         본당명 = c[0].text_input("본당명", b.본당명)
+        회계연도 = c[3].number_input("회계연도", 2000, 2100, value=b.회계연도, help="문서번호 앞부분의 {연도}와 작성일 확인에 씁니다")
         분과 = c[1].text_input("분과", b.분과)
         주관단체 = c[2].text_input("주관단체", b.주관단체)
         c = st.columns(3)
@@ -41,7 +39,7 @@ def basic_form(s: Settings, key: str) -> dict | None:
     if not saved:
         return None
     data = s.model_dump()
-    data["기본정보"].update(본당명=본당명, 분과=분과, 주관단체=주관단체, 분과장=분과장, 기본장소=기본장소, 참가대상=참가대상)
+    data["기본정보"].update(본당명=본당명, 회계연도=int(회계연도), 분과=분과, 주관단체=주관단체, 분과장=분과장, 기본장소=기본장소, 참가대상=참가대상)
     data["기안정보"].update(기안자=기안자, 기안단체장=기안단체장)
     data["연락처"] = {"기안자": 연1.strip(), "기안단체장": 연2.strip()}
     data["계좌"] = {"은행명": 은행.strip(), "계좌번호": 계좌.strip(), "예금주": 예금주.strip()}
@@ -52,11 +50,8 @@ def basic_form(s: Settings, key: str) -> dict | None:
 def api_key_status() -> None:
     """API 키는 앱에서 입력·저장하지 않는다. 상태만 보여 준다."""
     key = lib.secrets().get("ANTHROPIC_API_KEY", "")
-    rows = load_usage(Path(st.session_state.ws.path) / str(lib.ledger().year) / "usage.csv")
-    last = rows[-1]["시각"] if rows else "기록 없음"
-    c = st.columns(3)
+    c = st.columns(2)
     c[0].metric("Claude API 키", "설정됨" if key else "없음")
     c[1].metric("끝 4자리", key[-4:] if key else "-")
-    c[2].metric("마지막 호출 성공", last)
     st.caption("키 교체는 개발자에게 안전하게 전달하세요(메신저 평문 대신 직접 전달 등). "
                "개발자가 Streamlit Cloud Secrets에서 바꿉니다. 이 앱에서는 키를 입력·저장하지 않습니다.")

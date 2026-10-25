@@ -112,15 +112,15 @@ def to_extraction(n: int, path, out: dict) -> ReceiptExtraction:
                              대행사표기=pg)
 
 
-def extract_receipts(paths: list, ledger, client=None) -> list[ReceiptExtraction]:
+def extract_receipts(paths: list, settings, client=None) -> list[ReceiptExtraction]:
     """영수증마다 한 번씩 호출한다(장별 결과를 섞지 않기 위해). 순번은 입력 순서."""
     client = client or make_client()
-    system = SYSTEM.format(year=ledger.year)
+    system = SYSTEM.format(year=settings.현재연도)
     out = []
     for n, path in enumerate(paths, 1):
         image = prepare_image(Path(path))
         content = [image_block(jpeg_bytes(image)), {"type": "text", "text": f"영수증 {n}번 ({Path(path).name})"}]
-        result = call(ledger, client, system, content, SPEC)
+        result = call(settings, client, system, content, SPEC)
         ext = to_extraction(n, path, result.input)
         ext.call = result.info
         out.append(ext)

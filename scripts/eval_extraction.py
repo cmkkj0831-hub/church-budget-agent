@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agents.receipt_agent import extract_receipts  # noqa: E402
-from core.ledger import Ledger  # noqa: E402
+from core.report import load_settings  # noqa: E402
 from core.paths import OUT_DIR, find_child, nfc, source_dir  # noqa: E402
 
 REPORT_LINES = {  # (보고서, 항목) → 금액
@@ -57,9 +57,9 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     files = receipt_files()[: args.limit] if args.limit else receipt_files()
-    ledger = Ledger.load()
-    print(f"영수증 {len(files)}장 추출 중 (모델 {ledger.settings.모델})…")
-    results = extract_receipts(files, ledger)
+    settings = load_settings()
+    print(f"영수증 {len(files)}장 추출 중 (모델 {settings.모델})…")
+    results = extract_receipts(files, settings)
 
     truth = {}
     if args.truth:

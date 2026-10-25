@@ -1,7 +1,8 @@
 # church-budget-agent (개발자용)
 
-개포동성당 초등부 교사회 예산신청서·집행보고서(hwpx) 생성, 회계 장부·이슈 관리 Streamlit 앱.
-운영은 회계담당 1인이 앱으로 하고(사용법은 [docs/사용설명서.md](docs/사용설명서.md)), 개발자는 배포·API 키 교체·앱 공유 설정만 맡는다.
+개포동성당 초등부 교사회 **집행보고서(서식2) hwpx + 영수증 첨부 docx 생성** Streamlit 앱. 화면은 집행 보고서·설정 두 개.
+장부는 관리하지 않는다(문서번호·연결 신청서·신청액은 회계담당이 직접 입력, 금액은 코드가 계산).
+운영은 회계담당 1인이 하고(사용법은 [docs/사용설명서.md](docs/사용설명서.md)), 개발자는 배포·API 키 교체·앱 공유 설정만 맡는다.
 
 > **앱에는 로그인·암호화가 없다.** 들어오면 모든 기능을 쓸 수 있고, 계좌·연락처는 `data/settings.json`에 평문으로 저장된다.
 > 접근 제한은 **Streamlit 앱 공유 설정('초대한 사람만')**과 **GitHub 비공개 저장소**로만 한다. 둘 다 반드시 지킨다.
@@ -10,13 +11,13 @@
 ## 구조
 
 ```
-app/      Streamlit 앱(진입점 app/Home.py, 화면은 app/views/)
-core/     장부·이슈·계산·저장(로컬/GitHub)·회계연도 전환 — UI·LLM 의존 없음
-agents/   Claude 호출(정보 추출·문장 작성만. 금액 계산은 core)
+app/      Streamlit 앱(진입점 app/Home.py, 화면 app/views/report.py·settings.py)
+core/     report.py(보고서 금액 계산·검증, 설정 읽기·쓰기), models.py, storage.py(로컬/GitHub) — UI·LLM 의존 없음
+agents/   Claude 호출: receipt_agent(영수증 읽기), report_agent(세부내역 묶기·경과보고 문장). 금액 계산은 core
 hwpx/     hwpx 채우기·읽기, 영수증 첨부 docx
-data/     장부(연도별 data/{연도}/), settings.json(설정·연락처·계좌 — main에서는 연락처·계좌 빈칸)
+data/     settings.json(설정·연락처·계좌 — main에서는 연락처·계좌 빈칸, 실제 값은 data 브랜치)
 scripts/  check_cloud.py(배포 점검), eval_extraction.py
-docs/     사용설명서.md(앱 안에서도 보임), 회계담당_접속안내.md
+docs/     사용설명서.md, 회계담당_접속안내.md
 tests/    pytest(Claude는 FakeClient 대역)
 ```
 
@@ -31,15 +32,15 @@ cp .streamlit/secrets.toml.example .streamlit/secrets.toml   # 값 채우기. GI
 budget_env/bin/streamlit run app/Home.py
 ```
 
-- 실제 장부(data/)를 건드리지 않고 시험하려면 사본을 만들어 `BUDGET_DATA_DIR=/tmp/사본/data`로 실행한다.
+- 설정(data/)을 건드리지 않고 시험하려면 사본을 만들어 `BUDGET_DATA_DIR=/tmp/사본/data`로 실행한다. 보고서 생성은 아무것도 저장하지 않는다.
 - `.streamlit/config.toml`: 테마, 업로드 한 파일당 30MB.
 
 ## 테스트
 
 ```bash
 budget_env/bin/python -m pytest tests                                  # 단위·앱 시나리오(API 호출 없음)
-APP_ENV=dev budget_env/bin/python -m pytest tests/test_agents_live.py --live   # 실제 Claude API 스모크 3건
-budget_env/bin/python scripts/check_cloud.py                           # secrets·GitHub·설정·Claude·hwpx·xlsx 점검
+APP_ENV=dev budget_env/bin/python -m pytest tests/test_agents_live.py --live   # 실제 Claude API 스모크 2건
+budget_env/bin/python scripts/check_cloud.py                           # secrets·GitHub·설정·Claude·보고서 hwpx·docx 점검
 ```
 
 `check_cloud.py`는 비밀값·계좌·연락처를 출력하지 않고, 운영 브랜치는 읽기만 한다(쓰기 시험은 임시 브랜치를 만들었다 지움).
@@ -49,15 +50,13 @@ budget_env/bin/python scripts/check_cloud.py                           # secrets
 | 브랜치 | 내용 | 누가 쓰나 |
 |---|---|---|
 | `main` | 앱 코드(Streamlit Cloud 배포 브랜치) | 개발자 push |
-| `data` | 장부 데이터 `data/` (+ 만들 때의 코드 사본) | 앱이 GitHub API로 커밋 |
+| `data` | `data/settings.json`(+ 예전 장부 파일·만들 때의 코드 사본, 앱은 settings.json만 씀) | 앱이 설정 저장 때 GitHub API로 커밋 |
 
-- Streamlit Cloud는 배포 브랜치에 push가 생길 때마다 앱을 재시작한다. 장부 저장을 `data` 브랜치에 하므로 저장해도 재시작되지 않는다.
-- 배포 후에는 **`data` 브랜치가 장부의 원본**이다. `main`의 `data/`는 배포 시점 사본(로컬 개발·테스트용)이며 갱신하지 않는다.
-  두 브랜치를 서로 merge하지 않는다. 계좌·연락처 실제 값은 data 브랜치에만 있고, main의 settings.json에서는 빈칸이다
-  (tests/test_data.py가 확인 — 로컬에서 앱으로 값을 넣었다면 main에 커밋하지 말 것).
-- 로컬에서 최신 장부가 필요하면: `git fetch origin data && git restore --source origin/data -- data/` (커밋하지 말 것) 또는 앱 › 인수인계 › 패키지.
-- 데이터 형식을 바꾸는 코드 변경(열 추가 등)은 `data` 브랜치 파일도 함께 옮겨야 한다. 앱이 쓰지 않는 시간에 한다.
-- 앱의 커밋 메시지: `장부: (예)2026-053 … 신청서 추가`, `이슈: I-019 해결(설명됨)`, `되돌리기: H-0012`, `설정: …`
+- Streamlit Cloud는 배포 브랜치에 push가 생길 때마다 앱을 재시작한다. 설정 저장은 `data` 브랜치에 하므로 저장해도 재시작되지 않는다.
+- 배포 후 설정의 원본은 **`data` 브랜치**다. 계좌·연락처 실제 값은 data 브랜치에만 두고 main의 settings.json은 빈칸으로 둔다.
+  두 브랜치를 서로 merge하지 않는다.
+- 예전(장부·이슈 기능이 있던 때) 장부 파일은 data 브랜치와 main의 git 이력에 그대로 남아 있다.
+- 앱의 커밋 메시지: `설정: 기본 정보·연락처 수정` 등.
 
 ## 비밀값(secrets)
 
@@ -109,8 +108,8 @@ budget_env/bin/python scripts/check_cloud.py                           # secrets
 Secrets를 나중에 바꾸려면: 앱 › ⋮ › Settings › Secrets → 저장하면 잠시 뒤 반영(바로 반영하려면 ⋮ › Reboot app).
 
 ### 참고
-- 앱이 한동안(며칠) 쓰이지 않으면 잠든다. 접속하면 "This app has gone to sleep… Yes, get this app back up!" 버튼이 나오고, 누르면 1분 안팎으로 깨어난다. 데이터는 data 브랜치에 있으므로 잃지 않는다.
-- Reboot·재배포 때 서버의 임시 파일은 지워지지만 장부는 GitHub에 있으므로 유지된다.
+- 앱이 한동안(며칠) 쓰이지 않으면 잠든다. 접속하면 "This app has gone to sleep… Yes, get this app back up!" 버튼이 나오고, 누르면 1분 안팎으로 깨어난다. 설정은 data 브랜치에 있으므로 잃지 않는다.
+- Reboot·재배포 때 화면에서 작성 중이던 보고서 내용은 사라진다(설정은 유지).
 
 ## 운영 계정
 
@@ -131,38 +130,29 @@ GitHub·Streamlit Cloud·Anthropic Console은 **교사회 공용 이메일 계�
 1. 회계담당이 https://console.anthropic.com 에 (공용) 계정을 만들고 **Settings › Limits에서 월 사용 한도**를 정한 뒤 API 키를 발급한다.
 2. 키를 개발자에게 **안전하게** 전달한다(직접 만나 전달하거나 비밀번호 관리자 공유 등). 메신저로 보냈다면 **전달에 쓴 메시지를 양쪽에서 삭제**한다.
 3. 개발자가 Streamlit Cloud › 앱 › Settings › Secrets의 `ANTHROPIC_API_KEY`를 바꾸고 **Reboot app** 한다.
-4. 회계담당이 앱 › 설정 › 관리자에서 'Claude API 키: 설정됨', 끝 4자리가 새 키와 같은지 확인하고, 영수증 읽기 등 한 번 써서 '마지막 호출 성공'이 갱신되는지 본다.
+4. 회계담당이 앱 › 설정 › Claude 모델·API 키에서 'Claude API 키: 설정됨', 끝 4자리가 새 키와 같은지 확인하고, 영수증 읽기를 한 번 해 본다.
 5. Console에서 **이전 키를 폐기(Disable/Delete)** 한다.
 
 ## 담당자가 바뀔 때(앱 공유)
 
-앱 › ⋮ › Settings › Sharing에서 **새 담당자 이메일을 초대하고, 이전 담당자 이메일을 제거**한다(앱의 📋 인수인계 체크리스트 항목).
-이전 담당자를 빼지 않으면 계속 장부·계좌를 볼 수 있다.
+앱 › ⋮ › Settings › Sharing에서 **새 담당자 이메일을 초대하고, 이전 담당자 이메일을 제거**한다.
+이전 담당자를 빼지 않으면 계속 계좌·연락처를 볼 수 있다.
 
 ## 비상 복구
 
-- **장부 백업**: GitHub › 저장소 › 브랜치 `data` › Code › Download ZIP, 또는 앱 › 대시보드 엑셀 / 인수인계 패키지.
-- **잘못된 반영**: 먼저 앱 › 오류 관리 › 이력에서 그 반영을 **되돌리기**(장부·이슈 함께 복원, 기록 남음).
-  그 뒤 같은 칸이 다시 바뀌어 되돌리기가 거부되면, GitHub에서 `data` 브랜치의 해당 커밋을 되돌린다:
-  ```bash
-  git fetch origin data && git switch data && git revert <커밋> && git push origin data
-  ```
-  (앱에서 ↻ 새로 불러오기). 앱이 쓰는 중이면 충돌할 수 있으니 회계담당과 시간을 맞춘다.
+- **설정 백업·복구**: GitHub › 저장소 › 브랜치 `data` › `data/settings.json`의 History에서 이전 버전을 볼 수 있다.
+  잘못 저장했다면 `git fetch origin data && git switch data && git revert <커밋> && git push origin data` 후 앱에서 ↻ 새로 불러오기.
+- **보고서를 잘못 만들었을 때**: 앱은 아무것도 저장하지 않으므로 고쳐서 다시 만들면 된다.
 - **접근하면 안 되는 사람이 들어왔다면**: Sharing에서 그 이메일을 지우고, 계좌·연락처가 노출됐다고 보고 회계담당에게 알린다.
   API 키는 Console에서 폐기·재발급한다.
 
 ## 배포 후 확인 체크리스트
 
-배포 URL에서 회계담당과 함께 확인한다. 실제 장부를 쓰므로 5·6번은 7번에서 반드시 되돌린다.
-
 1. **접근 차단**: 로그아웃 상태(시크릿 창)와 초대하지 않은 계정으로 접속하면 앱이 열리지 않는다.
-2. 초대한 계정으로 접속하면 바로 대시보드가 열리고 모든 메뉴가 보인다(앱 비밀번호 화면 없음).
-3. 대시보드 숫자가 로컬과 같다: 배정액 36,470,000원, 누계 두 기준(문서 기준·재계산 기준), 미해결 이슈 수.
-4. 설정에서 연락처·계좌를 입력·저장 → data 브랜치에 `data/settings.json` 커밋이 생긴다(main에는 없음).
-5. 신청서 1건 테스트 생성 → **설정의 연락처·계좌가 hwpx에 자동으로 들어갔는지**(한글로 열어 확인),
-   '이 문서만 다른 계좌 쓰기'로 예금주를 바꾸면 그 문서에만 들어가는지 → data 브랜치 커밋 → 앱이 재시작되지 않음 → 대시보드 반영.
-6. 이슈 1건 설명 → 반영 → 비고 사라짐.
-7. 5·6번을 오류 관리 › 이력 › 되돌리기로 원상복구 → 장부 행 수·다음 문서번호가 원래대로.
-8. 앱 Reboot 후 데이터 유지.
-9. 휴대폰에서 영수증 사진 업로드와 화면 확인.
-10. 사용량 탭에 호출이 `APP_ENV=prod`로 기록된다.
+2. 초대한 계정으로 접속하면 바로 집행 보고서가 열리고 메뉴는 집행 보고서·설정 두 개다(앱 비밀번호 화면 없음).
+3. 설정에서 연락처·계좌를 입력·저장 → data 브랜치에 `data/settings.json` 커밋이 생기고(main에는 없음) 앱이 재시작되지 않는다.
+4. 보고서 1건 테스트: 문서 정보·신청액·영수증·행사 정보 입력 → 영수증 읽기 → 초안 → 본당보조·자체예산·잔액 확인 → 만들기 →
+   zip의 hwpx를 한글로 열어 **설정의 연락처·계좌가 자동으로 들어갔는지**, 일시·장소·참가대상·인원이 맞는지,
+   '이 문서만 다른 계좌 쓰기'로 바꾼 예금주가 그 문서에만 들어가는지 확인. 영수증 docx도 연다.
+5. 앱 Reboot 후 설정이 유지된다.
+6. 휴대폰에서 영수증 사진 업로드와 화면 확인.

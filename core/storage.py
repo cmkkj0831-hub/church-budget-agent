@@ -1,8 +1,7 @@
 """장부 저장 계층. 앱은 세션마다 data/ 전체의 작업 사본(Workspace)을 받아 읽고 고친 뒤,
 commit으로 바뀐(또는 새로 생긴) 파일만 되돌려 쓴다. 받은 뒤 원본이 바뀌었으면(다른 곳에서 먼저 저장) ConflictError.
 
-data/ 구조: settings.json, {연도}/ledger.csv·plan.csv·plan_info.csv·issues.csv·
-history.csv·usage.csv. 파일은 data/ 기준 상대 경로(예: "2026/ledger.csv")로 다룬다.
+앱이 쓰는 파일은 data/settings.json뿐이다(예전 장부 파일이 있어도 그대로 둔다). 파일은 data/ 기준 상대 경로로 다룬다.
 
 - LocalStorage: data/ 파일을 직접 읽고 쓴다(충돌 판정은 내용 해시).
 - GitHubStorage: GitHub API(PyGithub)로 data/를 읽고, 바뀐 파일을 한 커밋으로 올린다(충돌 판정은 파일 sha).

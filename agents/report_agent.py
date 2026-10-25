@@ -1,5 +1,5 @@
 """집행보고서 초안. LLM은 영수증 묶기(계정과목·내용)와 문장만 정하고,
-금액은 영수증 값의 합으로 코드가 채운다. 보고서 금액(본당·자체·잔액)은 core.build_report가 계산한다.
+금액은 영수증 값의 합으로 코드가 채운다. 보고서 금액(본당·자체·잔액)은 core.report.build_report가 계산한다.
 
 경과보고 한 줄 형식: "M월 D일 항목 : 금액원 / 참가자 : 이름 세례명, …"
 """
@@ -10,8 +10,7 @@ from functools import lru_cache
 
 from agents.llm import CallInfo, arr, call, i, nullable, obj, s, tool
 from agents.receipt_agent import ReceiptExtraction, duplicate_warnings
-from core.ledger import BuildResult, Ledger
-from core.models import LedgerRow, LineItem, ReportDoc, RequestDoc
+from core.models import LineItem, Settings
 from core.paths import TEMPLATES_DIR
 
 ACCOUNTS = "식대, 다과비, 간식비, 교재비, 소모품비, 행사용품비, 선물비, 보험료, 차량임차료, 교통비, 장소대여비, 인쇄비, 행사비"
@@ -21,24 +20,22 @@ FORMAT_EXAMPLE = """8월 교사회 운영비를 다음과 같이 사용하였습
 8월 16일 회합 후 다과 : 43,300원 / 참가자 : 홍길동 베드로"""
 
 SYSTEM = """너는 천주교 개포동성당 초등부 교사회의 예산집행보고서(서식2) 초안을 쓴다.
-입력: 연결된 예산신청서 정보(사후정산이면 신청서 대신 회계담당이 고른 사업·대상 월·행사명), 영수증 목록(번호·날짜·상호·금액·품목), 경과보고 메모(progress_note, 없을 수 있음),
-차기 계획·건의사항 메모(suggestion, 없을 수 있음).
+입력: 회계담당이 적은 행사 정보(행사명·대상 월·목적·일시·장소·참가대상·인원·신청액 등, 일부는 비어 있을 수 있음),
+영수증 목록(번호·날짜·상호·금액·품목), 경과보고 메모(progress_note, 없을 수 있음).
 
 할 일
 1. 세부내역: 영수증을 계정과목별로 묶는다. 계정과목은 지출 내용을 보고 회계 용어로 정한다({accounts} 등).
    각 영수증 번호는 세부내역 중 정확히 한 곳에만 넣는다. 금액은 적지 않는다(프로그램이 영수증 금액을 더한다).
 2. 경과보고 줄: 한 줄에 한 건(같은 날 같은 용도는 한 줄). 날짜("M월 D일")와 항목(예: "미사 후 식대")과
    해당 영수증 번호, 참가자를 정한다. 금액은 적지 않는다.
+   - 행사 정보(행사명·목적·일시)를 기준으로 머리말·항목·세부내역 내용을 쓴다.
    - progress_note가 있으면 그 내용을 기준으로 줄을 만든다. 노트에 적힌 날짜·금액은 노트_날짜·노트_금액에 그대로 옮긴다.
      노트에서 나온 줄은 노트_언급=true. 노트에 없는 영수증으로 줄을 만들 때는 노트_언급=false.
    - progress_note가 없으면 영수증만으로 줄을 만든다(노트_언급=false, 노트_날짜·노트_금액 null).
    - 참가자는 노트에 적힌 사람만, 적힌 그대로 옮긴다. 명단에서 짐작해 추가하지 않는다.
    - 머리말은 "N월 ○○을 다음과 같이 사용하였습니다." 같은 한 문장.
-   - 사후정산이면 회계담당이 고른 사업·행사명·대상 월을 기준으로 머리말·항목·세부내역 내용을 쓰고,
-     사업ID_후보·행사명_제안·대상월도 그 값을 따른다(영수증과 맞지 않아 보이면 불일치_메모에 적는다).
-3. 건의사항: suggestion이 있으면 공문서 말투로 다듬는다. 없으면 빈 문자열.
-4. 노트와 영수증이 서로 맞지 않는 점이 보이면 불일치_메모에 짧게 적는다.
-5. [대행사 표기]인 영수증은 가맹점명이 결제대행사라 실제 가게가 아니다. progress_note에 그 결제의 실제 상호가
+3. 노트·행사 정보와 영수증이 서로 맞지 않는 점이 보이면 불일치_메모에 짧게 적는다.
+4. [대행사 표기]인 영수증은 가맹점명이 결제대행사라 실제 가게가 아니다. progress_note에 그 결제의 실제 상호가
    보이면 대행사_상호에 {{영수증번호, 상호}}로 적는다(노트에 없으면 적지 않는다). 세부내역 내용에도 실제 상호·용도를 쓴다.
 
 교사 명단(이름 세례명): {roster}
@@ -58,11 +55,7 @@ SPEC = tool("submit_report_draft", "집행보고서 초안 제출", obj({
         "노트_금액": nullable(i("노트에 적힌 금액(원)")),
     })),
     "세부내역": arr(obj({"계정과목": s(), "내용": s(), "영수증번호": arr(i())})),
-    "건의사항": s(),
     "불일치_메모": arr(s()),
-    "행사명_제안": nullable(s()),
-    "대상월": nullable(i()),
-    "사업ID_후보": arr(obj({"사업ID": s(), "근거": s()})),
     "대행사_상호": arr(obj({"영수증번호": i(), "상호": s()}), "대행사 표기 영수증의 실제 상호(노트에 있을 때만)"),
 }))
 
@@ -102,28 +95,11 @@ class ReportLine:
 class ReportComposition:
     세부내역: list[LineItem]
     경과보고: str
-    건의사항: str
     lines: list[ReportLine]
     warnings: list[str] = field(default_factory=list)
-    행사명_제안: str | None = None
-    대상월: int | None = None
-    사업ID_후보: list[dict] = field(default_factory=list)
     참가자_선택: list[dict] = field(default_factory=list)  # 세례명이 겹쳐 고를 사람: {줄, 입력, 후보}
     calls: list[CallInfo] = field(default_factory=list)
 
-
-@dataclass
-class ReportDraft:
-    doc: ReportDoc
-    build: BuildResult
-    composition: ReportComposition
-
-    @property
-    def warnings(self) -> list[str]:
-        return self.composition.warnings
-
-
-# ---------------------------------------------------------------- 코드 쪽 정리
 
 def md(d: date) -> str:
     return f"{d.month}월 {d.day}일"
@@ -162,7 +138,7 @@ def match_participant(name: str, roster: list[str]) -> str | None:
 
 
 def compose(out: dict, receipts: list[ReceiptExtraction], roster: list[str], year: int,
-            has_note: bool, has_suggestion: bool) -> ReportComposition:
+            has_note: bool) -> ReportComposition:
     by_no = {r.순번: r for r in receipts}
     warnings = duplicate_warnings(receipts)
     for item in out.get("대행사_상호") or []:  # 사용자 설명의 상호를 우선
@@ -232,16 +208,15 @@ def compose(out: dict, receipts: list[ReceiptExtraction], roster: list[str], yea
     warnings += [f"검토 메모: {m}" for m in out.get("불일치_메모") or []]
 
     body = "\n".join([out.get("머리말") or "", *(ln.text() for ln in lines)]).strip()
-    return ReportComposition(items, body, (out.get("건의사항") or "") if has_suggestion else "", lines,
-                             warnings, out.get("행사명_제안"), out.get("대상월"),
-                             [c for c in out.get("사업ID_후보") or []], choices)
+    return ReportComposition(items, body, lines, warnings, choices)
 
 
 # ---------------------------------------------------------------- 호출
 
-def _system(ledger: Ledger) -> str:
+@lru_cache(maxsize=4)
+def _system(roster: tuple[str, ...]) -> str:
     examples = "\n\n".join([FORMAT_EXAMPLE, *example_reports()])
-    return SYSTEM.format(accounts=ACCOUNTS, roster=", ".join(ledger.settings.교사명단), examples=examples)
+    return SYSTEM.format(accounts=ACCOUNTS, roster=", ".join(roster), examples=examples)
 
 
 def _receipt_lines(receipts: list[ReceiptExtraction]) -> str:
@@ -251,46 +226,16 @@ def _receipt_lines(receipts: list[ReceiptExtraction]) -> str:
         f"{f'{r.금액:,}원' if r.금액 is not None else '금액 미상'} | {r.품목요약}" for r in receipts)
 
 
-def _request_lines(request) -> str:
-    if request is None:
-        return "(연결 신청서 없음 — 사후정산이면 보고서를 먼저 확정하고 신청서를 역생성한다)"
-    keys = ("문서번호", "행사명", "월", "사업ID", "금번신청액", "목적", "행사일정")
-    return "\n".join(f"{k}: {getattr(request, k)}" for k in keys if getattr(request, k, None) not in (None, ""))
+def ask(settings: Settings, event: str, receipts, progress_note, client):
+    """event: 회계담당이 적은 행사 정보 줄(앱 lib.event_text 등). 비어 있을 수 있다."""
+    text = (f"[행사 정보 — 회계담당 입력]\n{event or '(없음)'}\n\n[영수증]\n{_receipt_lines(receipts)}\n\n"
+            f"[progress_note]\n{progress_note or '(없음)'}")
+    return call(settings, client, _system(tuple(settings.교사명단)), text, SPEC, effort="high")
 
 
-def ask(ledger: Ledger, request, receipts, progress_note, suggestion, client, extra: str = "", context: str = ""):
-    """context: 사후정산에서 회계담당이 고른 사업·대상 월·행사명(agents.post_settlement.context_lines).
-    있으면 [연결 신청서] 대신 보낸다."""
-    head = (f"[사후정산 사업·행사 — 회계담당이 고름, 이 기준으로 작성]\n{context}" if context
-            else f"[연결 신청서]\n{_request_lines(request)}")
-    text = (f"{head}\n\n[영수증]\n{_receipt_lines(receipts)}\n\n"
-            f"[progress_note]\n{progress_note or '(없음)'}\n\n[suggestion]\n{suggestion or '(없음)'}{extra}")
-    return call(ledger, client, _system(ledger), text, SPEC, effort="high")
-
-
-def compose_report(ledger: Ledger, request, receipts: list[ReceiptExtraction], progress_note: str | None = None,
-                   suggestion: str | None = None, client=None, extra: str = "", context: str = "") -> ReportComposition:
-    result = ask(ledger, request, receipts, progress_note, suggestion, client, extra, context)
-    comp = compose(result.input, receipts, ledger.settings.교사명단, ledger.year,
-                   bool(progress_note), bool(suggestion))
+def compose_report(settings: Settings, event: str, receipts: list[ReceiptExtraction],
+                   progress_note: str | None = None, client=None) -> ReportComposition:
+    result = ask(settings, event, receipts, progress_note, client)
+    comp = compose(result.input, receipts, settings.교사명단, settings.현재연도, bool(progress_note))
     comp.calls.append(result.info)
     return comp
-
-
-def report_fields(request) -> dict:
-    """연결 신청서에서 보고서로 옮기는 칸."""
-    if isinstance(request, RequestDoc):
-        keys = ("월", "사업ID", "행사명", "행사유형", "주관단체", "협조단체", "목적", "시작", "종료", "박", "일",
-                "장소", "참가대상", "인원_총", "인원_남", "인원_여")
-        return {k: getattr(request, k) for k in keys}
-    return {"월": request.월번호, "사업ID": request.사업ID, "행사명": request.행사명}
-
-
-def draft_report(request: LedgerRow | RequestDoc, receipts: list[ReceiptExtraction], ledger: Ledger,
-                 progress_note: str | None = None, suggestion: str | None = None,
-                 작성일: date | None = None, client=None, today: date | None = None) -> ReportDraft:
-    comp = compose_report(ledger, request, receipts, progress_note, suggestion, client)
-    draft = ReportDoc(**report_fields(request), 작성일=작성일, 세부내역=comp.세부내역,
-                      경과보고=comp.경과보고, 건의사항=comp.건의사항)
-    build = ledger.build_report(draft, request, today=today)
-    return ReportDraft(build.docs[0], build, comp)

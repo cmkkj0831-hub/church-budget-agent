@@ -6,10 +6,9 @@ from datetime import date, datetime
 
 import pytest
 
-from core.ledger import parse_date
 from core.models import LineItem, ReportDoc, RequestDoc
 from core.paths import TEMPLATES_DIR
-from core.validate import validate_report
+from core.report import build_report
 from hwpx.fill import REPORT_TEMPLATE, REQUEST_TEMPLATE, item_rows, render
 from hwpx.layout import REPORT, resolve
 from hwpx.reader import UnknownFormError, read_document
@@ -35,18 +34,22 @@ def full_fields(month=8):
                 박=1, 일=2, 장소="개포동성당", 참가대상="초등부 교사회", 인원_총=9, 인원_남=5, 인원_여=4)
 
 
-def built_request(ledger, n):
-    doc = RequestDoc(**full_fields(), 행사일정="첫 줄 설명\n\n- 둘째 줄 & <특수문자>", 세부내역=items(n))
-    return ledger.build_request(doc, today=TODAY).docs[0]
+def built_request(n):
+    """신청서 양식 왕복용(앱은 신청서를 만들지 않지만 hwpx 모듈은 두 양식을 다룬다). 금액 칸은 직접 채운다."""
+    its = [i.model_copy(update={"금액": i.단가 * i.수량}) for i in items(n)]
+    total = sum(i.금액 for i in its)
+    return RequestDoc(**full_fields(), 문서번호="(예)2026-053", 행사일정="첫 줄 설명\n\n- 둘째 줄 & <특수문자>",
+                      세부내역=its, 수입=total, 자체예산=0, 본당보조=total, 합계=total, 예산배정액=36_470_000,
+                      금번신청액=total, 신청누계액=23_694_010 + total, 잔여액=36_470_000 - 23_694_010 - total)
 
 
-def built_report(ledger, n):
-    doc = ReportDoc(**full_fields(), 경과보고="다음과 같이 사용하였습니다.\n- 식대", 건의사항="다음 달 인원 증가",
-                    세부내역=items(n))
-    return ledger.build_report(doc, ledger.row(53), today=TODAY).docs[0]
+def built_report(settings, n):
+    doc = ReportDoc(**full_fields(), 문서번호="(집)2026-054", 연결문서번호="(예)2026-052",
+                    경과보고="다음과 같이 사용하였습니다.\n- 식대", 건의사항="다음 달 인원 증가", 세부내역=items(n))
+    return build_report(doc, settings, 540_000).doc
 
 
-IGNORED = {"연결문서번호", "양식", "행사유형", "계좌_override"}
+IGNORED = {"연결문서번호", "양식", "행사유형", "계좌_override", "사업ID"}
 
 
 def comparable(doc):
@@ -57,8 +60,8 @@ def comparable(doc):
 
 @pytest.mark.parametrize("n", [1, 7, 12])
 @pytest.mark.parametrize("kind", ["request", "report"])
-def test_round_trip(ledger, tmp_path, n, kind):
-    doc = built_request(ledger, n) if kind == "request" else built_report(ledger, n)
+def test_round_trip(settings, tmp_path, n, kind):
+    doc = built_request(n) if kind == "request" else built_report(settings, n)
     path = render(doc, tmp_path / f"{kind}{n}.hwpx")
     res = read_document(path, 사업ID="P11")
     assert res.failures == []
@@ -66,8 +69,8 @@ def test_round_trip(ledger, tmp_path, n, kind):
     assert comparable(res.doc) == comparable(doc)
 
 
-def test_twelve_items_structure(ledger, tmp_path):
-    doc = built_report(ledger, 12)
+def test_twelve_items_structure(settings, tmp_path):
+    doc = built_report(settings, 12)
     path = render(doc, tmp_path / "r.hwpx")
     with zipfile.ZipFile(path) as z, zipfile.ZipFile(REPORT_TEMPLATE) as t:
         xml, base = z.read("Contents/section0.xml").decode(), t.read("Contents/section0.xml").decode()
@@ -104,8 +107,8 @@ def test_expand_adjusts_merged_span():
 
 # ---------------------------------------------------------------- group
 
-def test_group_mode_fits_seven_rows(ledger, tmp_path):
-    doc = built_report(ledger, 12)
+def test_group_mode_fits_seven_rows(settings, tmp_path):
+    doc = built_report(settings, 12)
     rows = item_rows(doc, "group")
     assert len(rows) == 7
     assert rows[-1]["내용"] == "7번 항목 식대 외 5건" and rows[-1]["단가"] == rows[-1]["수량"] == ""
@@ -116,7 +119,7 @@ def test_group_mode_fits_seven_rows(ledger, tmp_path):
     assert sum(i.금액 for i in res.doc.세부내역) == doc.합계B
 
 
-def test_group_mode_merges_largest_account_first(ledger):
+def test_group_mode_merges_largest_account_first():
     its = items(6, "가") + items(3, "나")  # 9건 → 2건 줄여야 함: '가'에서 묶음
     doc = ReportDoc(월=8, 사업ID="P11", 행사명="x", 세부내역=its)
     rows = item_rows(doc, "group")
@@ -125,15 +128,15 @@ def test_group_mode_merges_largest_account_first(ledger):
                                         "1번 항목 식대", "2번 항목 식대", "3번 항목 식대"]
 
 
-def test_group_mode_impossible(ledger):
+def test_group_mode_impossible(settings):
     its = [LineItem(계정과목=f"계정{i}", 내용=f"항목{i}", 단가=1_000) for i in range(8)]
     doc = ReportDoc(월=8, 사업ID="P11", 행사명="8월 교사회 운영비", 세부내역=its)
     with pytest.raises(ValueError):
         item_rows(doc, "group")
-    ledger.settings.hwpx_row_mode = "group"
-    assert "too_many_items" in {f.코드 for f in validate_report(doc, ledger, today=TODAY)}
-    ledger.settings.hwpx_row_mode = "clone"
-    assert "too_many_items" not in {f.코드 for f in validate_report(doc, ledger, today=TODAY)}
+    settings.hwpx_row_mode = "group"
+    assert any("묶기(group)로 맞출 수 없습니다" in e for e in build_report(doc, settings, 0).errors)
+    settings.hwpx_row_mode = "clone"
+    assert build_report(doc, settings, 0).errors == []
 
 
 # ---------------------------------------------------------------- reader
@@ -153,8 +156,8 @@ def test_reader_blank_template_and_other_documents(tmp_path):
         read_document(path)
 
 
-def test_reader_reports_failures(ledger, tmp_path):
-    doc = built_request(ledger, 2)
+def test_reader_reports_failures(tmp_path):
+    doc = built_request(2)
     path = render(doc, tmp_path / "a.hwpx")
     with zipfile.ZipFile(path) as src, zipfile.ZipFile(tmp_path / "b.hwpx", "w") as dst:
         for info in src.infolist():
@@ -169,22 +172,14 @@ def test_reader_reports_failures(ledger, tmp_path):
 
 @pytest.mark.parametrize("name", ["request_childrensday", "report_childrensday",
                                   "request_camp_aug", "report_camp_aug"])
-def test_examples_match_ledger(ledger, name):
+def test_examples_read_without_failures(name):
     path = EXAMPLES / f"{name}.hwpx"
     if not path.exists():
         pytest.skip("작성 예시 없음(커밋 제외 파일)")
     res = read_document(path)
-    d = res.doc
-    assert res.failures == []
-    row = next(r for r in ledger.rows if r.문서번호 == d.문서번호)
-    assert parse_date(row.작성일) == d.작성일 and row.행사명 == d.행사명
-    assert (row.자체예산, row.본당보조) == (d.자체예산, d.본당보조)
-    if res.kind == "예산신청서":
-        assert (row.예산배정액, row.금번신청액, row.신청누계액, row.잔여액, row.합계) == \
-            (d.예산배정액, d.금번신청액, d.신청누계액, d.잔여액, d.합계)
-    else:
-        assert (row.합계, row.잔액) == (d.합계B, d.잔액)
-        assert d.예산A == ledger.find_ref(row.연결문서번호).금번신청액 + d.자체예산
+    assert res.failures == [] and res.doc.행사명 and res.doc.문서번호
+    if res.kind == "집행보고서":
+        assert res.doc.예산A - res.doc.합계B == res.doc.잔액
 
 
 # ---------------------------------------------------------------- 영수증 docx
