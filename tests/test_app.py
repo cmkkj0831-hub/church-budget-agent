@@ -76,7 +76,8 @@ def png_bytes():
 def test_only_report_and_settings_pages(data):
     at = start()
     assert at.title[0].value.startswith("🧾")
-    assert not at.text_input and not at.number_input and not at.text_area and not at.date_input  # 영수증 업로드만
+    assert [t.label for t in at.text_input] == ["행사"] and [t.label for t in at.text_area] == ["목적"]
+    assert not at.number_input and not at.date_input  # 행사·목적·영수증 업로드만
     for page in ("views/request.py", "views/dashboard.py", "views/issues.py", "views/post_settlement.py",
                  "views/year.py", "views/handover.py"):
         with pytest.raises(ValueError):  # 지운 화면은 등록돼 있지 않다
@@ -95,18 +96,24 @@ def test_receipts_only_to_report(data, monkeypatch):
     save_settings(s, data)
     before = {f: f.read_bytes() for f in data.rglob("*") if f.is_file()}
 
-    at = start(FakeClient(receipt("편의점", 30_000), receipt("제과점", 25_000, "2026-10-21"), report_out([1, 2])))
+    fake = FakeClient(receipt("편의점", 30_000), receipt("제과점", 25_000, "2026-10-21"), report_out([1, 2]))
+    at = start(fake)
     assert button(at, "보고서 만들기").disabled  # 영수증 전
+    at.text_input(key="rep_event").input("10월 초등부 교리 후 간식")
+    at.text_area(key="rep_purpose").input("교리에 참여한 어린이 격려")
     at.session_state["rep_files"] = [("a.png", png_bytes()), ("b.png", png_bytes())]
     run_ok(at)
     button(at, "보고서 만들기").click()
     run_ok(at)
 
     assert any("합계 55,000원" in x.value for x in at.success)
+    prompt = fake.prompt()  # 행사·목적은 경과보고를 쓰는 맥락으로 Claude에 간다
+    assert "행사: 10월 초등부 교리 후 간식" in prompt and "목적: 교리에 참여한 어린이 격려" in prompt
     doc = rendered[-1]
     assert doc.합계B == 55_000 and doc.경과보고 == "10월 교리 간식을 다음과 같이 사용하였습니다.\n10월 20일 교리 간식 : 55,000원"
     assert (doc.기안자, doc.주관단체, doc.기안자연락처, doc.은행명, doc.계좌번호, doc.예금주) == \
         ("정연재 레오", "초등부 교사회", "010-0000-0001", "테스트은행", "000-00-0000001", "홍길동")
+    assert doc.목적 == ""  # 양식의 행사명·목적 칸은 빈칸 그대로
     assert (doc.문서번호, doc.행사명, doc.작성일, doc.시작, doc.인원_총, doc.세부내역, doc.본당보조, doc.잔액) == \
         ("", "", None, None, None, [], None, None)
     with zipfile.ZipFile(io.BytesIO(at.session_state["rep_result"]["zip"])) as z:
