@@ -1,8 +1,8 @@
 """집행보고서 만들기(장부·입력칸 없음)와 설정 파일 읽기·쓰기. UI·LLM 의존성 없음.
 
-hwpx에 채우는 칸: 경과보고(Claude가 영수증으로 쓴 문장), 합계(B) = 영수증 금액 합(코드가 계산),
+hwpx에 채우는 칸: 행사명·목적(회계담당이 적은 그대로), 경과보고(Claude가 영수증으로 쓴 문장), 합계(B) = 영수증 금액 합(코드),
 설정값(주관단체·기안자·기안단체장·기본 장소·참가대상, 연락처·계좌는 렌더링 때 Settings.fill_contacts).
-그 밖의 칸(문서번호·행사명·작성일·일시·인원·세부내역·본당보조·자체예산·예산(A)·잔액)은 빈칸으로 둔다.
+그 밖의 칸(문서번호·작성일·일시·인원·세부내역·본당보조·자체예산·예산(A)·잔액)은 빈칸으로 둔다.
 """
 import json
 from datetime import date
@@ -28,10 +28,10 @@ def receipts_total(receipts) -> int:
     return sum(r.금액 or 0 for r in receipts)
 
 
-def build_report(settings: Settings, 경과보고: str, 합계: int) -> ReportDoc:
-    """경과보고·합계(B)와 설정값만 채운 보고서. 나머지 칸은 빈칸."""
+def build_report(settings: Settings, 경과보고: str, 합계: int, 행사명: str = "", 목적: str = "") -> ReportDoc:
+    """행사명·목적(입력 그대로)·경과보고·합계(B)와 설정값만 채운 보고서. 나머지 칸은 빈칸."""
     base, drafter = settings.기본정보, settings.기안정보
-    return ReportDoc(월=0, 행사명="", 경과보고=경과보고, 합계B=합계,
+    return ReportDoc(월=0, 행사명=행사명.strip(), 목적=목적.strip(), 경과보고=경과보고, 합계B=합계,
                      주관단체=base.주관단체, 장소=base.기본장소, 참가대상=base.참가대상,
                      기안자=drafter.기안자, 기안단체장=drafter.기안단체장)
 

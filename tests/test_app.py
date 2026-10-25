@@ -113,9 +113,9 @@ def test_receipts_only_to_report(data, monkeypatch):
     assert doc.합계B == 55_000 and doc.경과보고 == "10월 교리 간식을 다음과 같이 사용하였습니다.\n10월 20일 교리 간식 : 55,000원"
     assert (doc.기안자, doc.주관단체, doc.기안자연락처, doc.은행명, doc.계좌번호, doc.예금주) == \
         ("정연재 레오", "초등부 교사회", "010-0000-0001", "테스트은행", "000-00-0000001", "홍길동")
-    assert doc.목적 == ""  # 양식의 행사명·목적 칸은 빈칸 그대로
-    assert (doc.문서번호, doc.행사명, doc.작성일, doc.시작, doc.인원_총, doc.세부내역, doc.본당보조, doc.잔액) == \
-        ("", "", None, None, None, [], None, None)
+    assert (doc.행사명, doc.목적) == ("10월 초등부 교리 후 간식", "교리에 참여한 어린이 격려")  # 입력 그대로
+    assert (doc.문서번호, doc.작성일, doc.시작, doc.인원_총, doc.세부내역, doc.본당보조, doc.잔액) == \
+        ("", None, None, None, [], None, None)
     with zipfile.ZipFile(io.BytesIO(at.session_state["rep_result"]["zip"])) as z:
         assert sorted(z.namelist()) == ["집행보고서_20261020.hwpx", "집행보고서_20261020_영수증첨부.docx"]
     assert before == {f: f.read_bytes() for f in data.rglob("*") if f.is_file()}  # 아무것도 저장하지 않는다

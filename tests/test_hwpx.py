@@ -95,16 +95,18 @@ def test_special_characters_escaped(tmp_path):
 
 
 def test_report_only_body_total_and_settings(settings, tmp_path):
-    """경과보고·합계(B)·설정값만 채우고 나머지는 빈 양식 그대로."""
+    """행사명·목적(입력 그대로)·경과보고·합계(B)·설정값만 채우고 나머지는 빈 양식 그대로."""
     settings.연락처.기안자, settings.계좌.예금주 = "010-0000-0001", "홍길동"
-    doc = settings.fill_contacts(build_report(settings, "10월 교리 간식을 다음과 같이 사용하였습니다.", 55_000))
+    doc = settings.fill_contacts(build_report(settings, "10월 교리 간식을 다음과 같이 사용하였습니다.", 55_000,
+                                              "10월 교리 & <간식>", "어린이 격려\n교사회 운영"))
     path = render(doc, tmp_path / "r.hwpx")
     rep = read_cells(path)
     assert rep[REPORT_CELLS["합계B"]] == ["55,000원"]
+    assert rep[REPORT_CELLS["행사명"]] == ["10월 교리 & <간식>"] and rep[REPORT_CELLS["목적"]] == ["어린이 격려", "교사회 운영"]  # 줄마다 문단
     assert rep[REPORT_CELLS["기안자"]][0].startswith("정연재 레오") and rep[REPORT_CELLS["주관단체"]] == ["초등부 교사회"]
     assert rep[REPORT_CELLS["기안자연락처"]] == ["010-0000-0001"] and rep[REPORT_CELLS["예금주"]] == ["홍길동"]
     blank = read_cells(REPORT_TEMPLATE)
-    for key in ("문서번호", "작성일", "행사명", "일시", "인원", "본당보조", "자체예산", "예산A", "잔액"):
+    for key in ("문서번호", "작성일", "일시", "인원", "본당보조", "자체예산", "예산A", "잔액"):
         assert rep[REPORT_CELLS[key]] == blank[REPORT_CELLS[key]], key  # 빈 양식 그대로
     back = read_document(path).doc
     assert back.경과보고 == "10월 교리 간식을 다음과 같이 사용하였습니다." and back.세부내역 == []

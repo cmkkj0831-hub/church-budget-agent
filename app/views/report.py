@@ -1,6 +1,6 @@
 """🧾 집행 보고서: 행사·목적(자연어)과 영수증 이미지를 받아 Claude가 영수증을 읽고, 행사·목적 맥락에 맞춰 경과보고를 써서
-hwpx를 만든다. 행사·목적은 경과보고를 쓰는 맥락으로만 쓰고 양식의 행사명·목적 칸에는 넣지 않는다.
-채우는 칸은 경과보고·합계(B)와 설정값뿐, 나머지는 빈칸. 결과: 보고서 hwpx + 영수증 첨부 docx(zip) 내려받기.
+hwpx를 만든다. 행사·목적은 양식의 행사명·목적 칸에 적은 그대로 들어간다.
+채우는 칸은 행사명·목적·경과보고·합계(B)와 설정값뿐, 나머지는 빈칸. 결과: 보고서 hwpx + 영수증 첨부 docx(zip) 내려받기.
 아무것도 저장하지 않는다."""
 import lib
 import pandas as pd
@@ -15,7 +15,8 @@ S = lib.settings()
 ss = st.session_state
 st.title("🧾 집행 보고서")
 st.caption("행사와 목적을 적고 영수증 이미지를 올린 뒤 [보고서 만들기]를 누르면, 그 맥락에 맞춘 경과보고와 합계가 채워진 "
-           "hwpx와 영수증 첨부 docx를 만듭니다. 주관단체·기안자·연락처·계좌 등은 설정값이 들어가고, 나머지 칸은 빈칸입니다.")
+           "hwpx와 영수증 첨부 docx를 만듭니다. 행사·목적은 양식의 행사명·목적 칸에 그대로 들어가고, 주관단체·기안자·"
+           "연락처·계좌 등은 설정값이 들어갑니다. 나머지 칸은 빈칸입니다.")
 
 
 def event_text() -> str:
@@ -59,7 +60,7 @@ if st.button("보고서 만들기", type="primary", disabled=not ss.get("rep_fil
         st.error(f"보고서를 만들지 못했습니다: {e}")
         st.stop()
     total = receipts_total(receipts)
-    doc = build_report(S, comp.경과보고, total)
+    doc = build_report(S, comp.경과보고, total, ss.get("rep_event", ""), ss.get("rep_purpose", ""))
     stem = file_stem(receipts, lib.today())
     files = {f"{stem}.hwpx": lib.render_hwpx(doc),
              f"{stem}_영수증첨부.docx": lib.receipts_docx("", "", [r.to_receipt() for r in receipts])}

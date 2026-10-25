@@ -173,7 +173,8 @@ def _common(doc: DocBase) -> dict[str, list[str]]:
         "은행명": doc.은행명, "계좌번호": doc.계좌번호, "예금주": doc.예금주, "참가대상": doc.참가대상,
         "인원": fmt_people(doc) if any(x is not None for x in (doc.인원_총, doc.인원_남, doc.인원_여)) else "",
     }
-    return {k: [t] for k, t in v.items() if t}
+    # 여러 줄 값(목적 등)은 줄마다 문단으로 나눈다(한 문단 안의 줄바꿈 문자는 한글에서 줄이 나뉘지 않음)
+    return {k: t.split("\n") for k, t in v.items() if t}
 
 
 def request_fields(doc: RequestDoc) -> dict[str, list[str]]:
